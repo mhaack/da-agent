@@ -264,6 +264,22 @@ export class DAAdminClient {
   }
 
   /**
+   * Create a version of a source document
+   */
+  async createVersion(
+    org: string,
+    repo: string,
+    path: string,
+    label?: string
+  ): Promise<DAVersionsResponse> {
+    const endpoint = `/versionsource/${org}/${repo}/${path}`;
+    return this.request<DAVersionsResponse>(endpoint, {
+      method: "POST",
+      ...(label ? { body: JSON.stringify({ label }) } : {})
+    });
+  }
+
+  /**
    * Get version history for a source
    */
   async getVersions(

@@ -5,7 +5,6 @@ import {
   streamText,
   convertToModelMessages,
   pruneMessages,
-  tool,
   stepCountIs,
   type StreamTextOnFinishCallback,
   type ToolSet
@@ -49,9 +48,6 @@ export class ChatAgent extends AIChatAgent<Env> {
           })
         )
       : {};
-
-    console.log("AWS_REGION:", this.env.AWS_REGION);
-    console.log("token present:", !!this.env.AWS_BEARER_TOKEN_BEDROCK);
 
     const result = streamText({
       model: bedrock("anthropic.claude-3-5-sonnet-20241022-v2:0"),
@@ -100,7 +96,6 @@ ALL content you create or update via tools MUST be valid Edge Delivery Services 
 - Use \`<img>\` with descriptive \`alt\` attributes for all images
 - NEVER use inline styles (\`style="..."\`)
 - NEVER use non-semantic \`<div>\` or \`<span>\` for layout outside of block tables
-- NEVER use \`<br>\` for spacing; use proper block elements instead
 
 ${
   pageContext
@@ -124,47 +119,13 @@ When making DA tool calls, always use these values:
         messages: await convertToModelMessages(this.messages),
         toolCalls: "before-last-2-messages"
       }),
-      tools: {
-        ...daTools,
-        // Approval tool: requires user confirmation before executing
-        calculate: tool({
-          description:
-            "Perform a math calculation with two numbers. Requires user approval for large numbers.",
-          inputSchema: z.object({
-            a: z.number().describe("First number"),
-            b: z.number().describe("Second number"),
-            operator: z
-              .enum(["+", "-", "*", "/", "%"])
-              .describe("Arithmetic operator")
-          }),
-          needsApproval: async ({ a, b }) =>
-            Math.abs(a) > 1000 || Math.abs(b) > 1000,
-          execute: async ({ a, b, operator }) => {
-            const ops: Record<string, (x: number, y: number) => number> = {
-              "+": (x, y) => x + y,
-              "-": (x, y) => x - y,
-              "*": (x, y) => x * y,
-              "/": (x, y) => x / y,
-              "%": (x, y) => x % y
-            };
-            if (operator === "/" && b === 0) {
-              return { error: "Division by zero" };
-            }
-            return {
-              expression: `${a} ${operator} ${b}`,
-              result: ops[operator](a, b)
-            };
-          }
-        })
-      },
+      tools: daTools,
       onFinish,
       stopWhen: stepCountIs(5),
       abortSignal: options?.abortSignal
     });
 
-    const response = result.toUIMessageStreamResponse();
-    console.log("response status:", response.status, "headers:", [...response.headers.entries()]);
-    return response;
+    return result.toUIMessageStreamResponse();
   }
 }
 

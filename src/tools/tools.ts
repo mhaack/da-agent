@@ -95,6 +95,7 @@ export function createDATools(client: DAAdminClient) {
             'Optional content type (e.g., "text/markdown", "text/html")'
           )
       }),
+      needsApproval: async () => true,
       execute: async ({ org, repo, path, content, contentType }) => {
         try {
           return await client.createSource(
@@ -125,6 +126,7 @@ export function createDATools(client: DAAdminClient) {
         content: z.string().describe("New content for the file"),
         contentType: z.string().optional().describe("Optional content type")
       }),
+      needsApproval: async () => true,
       execute: async ({ org, repo, path, content, contentType }) => {
         try {
           return await client.updateSource(
@@ -149,6 +151,7 @@ export function createDATools(client: DAAdminClient) {
         repo: z.string().describe("Repository name"),
         path: z.string().describe("Path to the file to delete")
       }),
+      needsApproval: async () => true,
       execute: async ({ org, repo, path }) => {
         try {
           return await client.deleteSource(org, repo, path);
@@ -196,6 +199,7 @@ export function createDATools(client: DAAdminClient) {
           .string()
           .describe("Path where the file should be moved to")
       }),
+      needsApproval: async () => true,
       execute: async ({ org, repo, sourcePath, destinationPath }) => {
         try {
           return await client.moveContent(
@@ -204,6 +208,29 @@ export function createDATools(client: DAAdminClient) {
             sourcePath,
             destinationPath
           );
+        } catch (e) {
+          if (isDAAPIError(e)) return { error: e.message, status: e.status };
+          return { error: String(e) };
+        }
+      }
+    }),
+
+    da_create_version: tool({
+      description:
+        "Create a version of a source document or sheet in a DA repository. Use this to snapshot the current state of a file before making changes.",
+      inputSchema: z.object({
+        org: z.string().describe("Organization name"),
+        repo: z.string().describe("Repository name"),
+        path: z
+          .string()
+          .describe(
+            'Path to the file including extension (e.g., "docs/my-page.html")'
+          ),
+        label: z.string().optional().describe("Optional label for the version")
+      }),
+      execute: async ({ org, repo, path, label }) => {
+        try {
+          return await client.createVersion(org, repo, path, label);
         } catch (e) {
           if (isDAAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
