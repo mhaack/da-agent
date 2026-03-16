@@ -1,0 +1,34 @@
+# For more details on how to configure Wrangler, refer to:
+# https://developers.cloudflare.com/workers/wrangler/configuration/
+
+name = "da-agent"
+main = "src/server.ts"
+compatibility_date = "2026-01-28"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+AWS_REGION = "us-east-1"
+
+[assets]
+not_found_handling = "single-page-application"
+run_worker_first = ["/agents/*"]
+
+[[durable_objects.bindings]]
+class_name = "ChatAgent"
+name = "ChatAgent"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ChatAgent"]
+
+[observability]
+enabled = true
+
+# Service Bindings
+[[services]]
+binding = "DAADMIN"
+service = "da-admin"
+
+[[services]]
+binding = "DACOLLAB"
+service = "da-collab"

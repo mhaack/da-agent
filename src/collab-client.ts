@@ -2,7 +2,7 @@
  * CollabClient - Connects to da-collab as the AI Assistant
  *
  * Phase 1: Presence Only
- * - Connects to da-collab via WebSocket
+ * - Connects to da-collab via WebSocket (using DACOLLAB service binding)
  * - Sets awareness state (purple cursor, "AI Assistant (username)")
  * - (Minimal) Sets awareness cursor at document start
  * - Disconnects after request completes
@@ -15,23 +15,113 @@ import { WebsocketProvider } from "y-websocket";
 
 type ActivityState = "connected" | "thinking" | "previewing" | "done";
 
-// Collab server URL - configurable via env
-const COLLAB_URL = (globalThis as unknown as Record<string, string>).DA_COLLAB_URL ?? "ws://localhost:4711/http://localhost:8787/source"
-// ws://localhost:4711/http://localhost:8787/source/aem-sandbox/block-collection/drafts/mhaack/germany-vacation.html";
+/**
+ * Creates a WebSocket class that establishes connections via a Cloudflare service binding.
+ * Required because WebsocketProvider needs a WebSocket constructor, not an instance.
+ */
+function createServiceBindingWSClass(binding: Fetcher) {
+  return class ServiceBindingWebSocket extends EventTarget {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSING = 2;
+    static CLOSED = 3;
+
+    readyState = 0; // CONNECTING
+    onopen: ((e: Event) => void) | null = null;
+    onmessage: ((e: MessageEvent) => void) | null = null;
+    onclose: ((e: CloseEvent) => void) | null = null;
+    onerror: ((e: Event) => void) | null = null;
+
+    private _ws: WebSocket | null = null;
+
+    constructor(url: string, protocols?: string | string[]) {
+      super();
+      this._connect(url, protocols);
+    }
+
+    private async _connect(url: string, protocols?: string | string[]) {
+      try {
+        const headers: Record<string, string> = { Upgrade: "websocket" };
+        if (protocols) {
+          headers["Sec-WebSocket-Protocol"] = Array.isArray(protocols)
+            ? protocols.join(", ")
+            : protocols;
+        }
+
+        const response = await binding.fetch(url, { headers });
+        const ws = (response as Response & { webSocket: WebSocket | null }).webSocket;
+
+        if (!ws) {
+          this._fail("Service binding did not return a WebSocket");
+          return;
+        }
+
+        this._ws = ws;
+        this.readyState = 1; // OPEN
+
+        const openEvent = new Event("open");
+        this.dispatchEvent(openEvent);
+        this.onopen?.(openEvent);
+
+        ws.addEventListener("message", (event: MessageEvent) => {
+          this.dispatchEvent(event);
+          this.onmessage?.(event);
+        });
+
+        ws.addEventListener("close", (event: CloseEvent) => {
+          this.readyState = 3; // CLOSED
+          this.dispatchEvent(event);
+          this.onclose?.(event);
+        });
+
+        ws.addEventListener("error", (event: Event) => {
+          this.dispatchEvent(event);
+          this.onerror?.(event);
+        });
+      } catch (error) {
+        this._fail(String(error));
+      }
+    }
+
+    private _fail(reason: string) {
+      console.error(`[CollabClient] WebSocket connection failed: ${reason}`);
+      this.readyState = 3; // CLOSED
+      const errorEvent = new Event("error");
+      this.dispatchEvent(errorEvent);
+      this.onerror?.(errorEvent);
+      const closeEvent = new CloseEvent("close", { code: 1006, reason });
+      this.dispatchEvent(closeEvent);
+      this.onclose?.(closeEvent);
+    }
+
+    send(data: string | ArrayBuffer | Uint8Array): void {
+      this._ws?.send(data);
+    }
+
+    close(code?: number, reason?: string): void {
+      if (this._ws) {
+        this.readyState = 2; // CLOSING
+        this._ws.close(code, reason);
+      }
+    }
+  };
+}
 
 export class CollabClient {
   private docPath: string;
   private imsToken: string;
   private userName: string;
+  private binding: Fetcher;
   private ydoc: Y.Doc | null = null;
   private provider: WebsocketProvider | null = null;
   isConnected = false;
   status: "disconnected" | "connecting" | "connected" | "error" = "disconnected";
 
-  constructor(docPath: string, imsToken: string, userName: string) {
+  constructor(docPath: string, imsToken: string, userName: string, binding: Fetcher) {
     this.docPath = docPath;
     this.imsToken = imsToken;
     this.userName = userName;
+    this.binding = binding;
   }
 
   /**
@@ -43,17 +133,23 @@ export class CollabClient {
       return;
     }
 
-    console.log(`[CollabClient] Connecting to ${COLLAB_URL} for doc: ${this.docPath}`);
+    console.log(`[CollabClient] Connecting to da-collab for doc: ${this.docPath}`);
     this.status = "connecting";
 
     this.ydoc = new Y.Doc();
 
-    const opts = {
-      protocols: ["yjs", this.imsToken],
-      connect: true
-    };
+    const WSClass = createServiceBindingWSClass(this.binding);
 
-    this.provider = new WebsocketProvider(COLLAB_URL, this.docPath, this.ydoc, opts);
+    this.provider = new WebsocketProvider(
+      "https://da-collab/source",
+      this.docPath,
+      this.ydoc,
+      {
+        protocols: ["yjs", this.imsToken],
+        connect: true,
+        WebSocketPolyfill: WSClass as unknown as typeof WebSocket
+      }
+    );
 
     this.provider.on("status", (event: { status: string }) => {
       console.log(`[CollabClient] Status: ${event.status} for ${this.docPath}`);
@@ -168,7 +264,8 @@ export class CollabClient {
 export async function createCollabClient(
   docPath: string,
   imsToken: string,
-  userName: string
+  userName: string,
+  binding: Fetcher
 ): Promise<CollabClient | null> {
   if (!docPath || !imsToken) {
     console.log("[CollabClient] Missing docPath or imsToken, skipping collab");
@@ -176,7 +273,7 @@ export async function createCollabClient(
   }
 
   try {
-    const client = new CollabClient(docPath, imsToken, userName);
+    const client = new CollabClient(docPath, imsToken, userName, binding);
     await client.connect();
     return client;
   } catch (error) {

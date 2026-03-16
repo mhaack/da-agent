@@ -57,7 +57,8 @@ export class ChatAgent extends AIChatAgent<Env> {
         ? await createCollabClient(
             `${pageContext.org}/${pageContext.site}/${ensureHtmlExtension(pageContext.path)}`,
             imsToken,
-            pageContext.org
+            pageContext.org,
+            this.env.DACOLLAB
           )
         : null;
 
