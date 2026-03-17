@@ -82,6 +82,7 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   const daOrigin = env.DA_ORIGIN ?? 'https://admin.da.live';
   const sourceUrl = `${daOrigin}/source/${pageContext?.org}/${pageContext?.site}/${ensureHtmlExtension(pageContext?.path ?? '')}`;
 
+  console.log(`[server] collab conditions: view=${pageContext?.view}, hasImsToken=${!!imsToken}, hasDACOLLAB=${!!env.DACOLLAB}`);
   const collab = pageContext?.view === 'edit' && imsToken && env.DACOLLAB
     ? await createCollabClient(sourceUrl, imsToken, pageContext.org, env.DACOLLAB)
     : null;

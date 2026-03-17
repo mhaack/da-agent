@@ -74,6 +74,7 @@ function createServiceBindingWSClass(binding: Fetcher) {
           return;
         }
 
+        ws.accept();
         this._ws = ws;
         this.readyState = 1; // OPEN
         this.onopen?.(new Event('open'));
