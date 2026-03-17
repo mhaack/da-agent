@@ -93,6 +93,16 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
       console.error('streamText error:', JSON.stringify(error));
       collab?.disconnect();
     },
+    onStepFinish: (step) => {
+      for (const call of step.toolCalls ?? []) {
+        console.log(`[tool:call] ${call.toolName}`, JSON.stringify(call.input));
+      }
+      for (const result of step.toolResults ?? []) {
+        const out = (result as unknown as { output: unknown }).output;
+        const isError = out && typeof out === 'object' && 'error' in out;
+        console.log(`[tool:result] ${result.toolName} — ${isError ? `error: ${(out as { error: string }).error}` : 'ok'}`);
+      }
+    },
     onFinish: () => {
       collab?.disconnect();
     },

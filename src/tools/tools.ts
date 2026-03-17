@@ -17,17 +17,9 @@ function withLogging<T extends Record<string, { execute?:(...args: any[]) => any
   for (const [name, t] of Object.entries(tools)) {
     const orig = t.execute;
     if (orig) {
-      t.execute = async (...args: any[]) => {
-        console.log(`[tool:start] ${name}`, JSON.stringify(args[0]));
-        try {
-          const result = await orig(...args);
-          const isError = result && typeof result === 'object' && 'error' in result;
-          console.log(`[tool:${isError ? 'error' : 'done'}] ${name}`, isError ? result.error : 'ok');
-          return result;
-        } catch (e) {
-          console.error(`[tool:throw] ${name}`, String(e));
-          throw e;
-        }
+      t.execute = (...args: any[]) => {
+        console.log(`[tool] ${name}`, JSON.stringify(args[0]));
+        return orig(...args);
       };
     }
   }
