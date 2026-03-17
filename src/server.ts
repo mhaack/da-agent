@@ -98,15 +98,6 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
       console.error('streamText error:', JSON.stringify(error));
       collab?.disconnect();
     },
-    onChunk: ({ chunk }) => {
-      if (chunk.type === 'tool-call') {
-        console.log(`[tool:call] ${chunk.toolName}`, JSON.stringify(chunk.input));
-      } else if (chunk.type === 'tool-result') {
-        const out = chunk.output as unknown;
-        const isError = out && typeof out === 'object' && 'error' in out;
-        console.log(`[tool:result] ${chunk.toolName} — ${isError ? `error: ${(out as { error: string }).error}` : 'ok'}`);
-      }
-    },
     onFinish: () => {
       collab?.disconnect();
     },

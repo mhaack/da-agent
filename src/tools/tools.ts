@@ -13,21 +13,8 @@ function isDAAPIError(e: unknown): e is DAAPIError {
   return typeof e === 'object' && e !== null && 'status' in e && 'message' in e;
 }
 
-function withLogging<T extends Record<string, { execute?:(...args: any[]) => any }>>(tools: T): T {
-  for (const [name, t] of Object.entries(tools)) {
-    const orig = t.execute;
-    if (orig) {
-      t.execute = (...args: any[]) => {
-        console.log(`[tool] ${name}`, JSON.stringify(args[0]));
-        return orig(...args);
-      };
-    }
-  }
-  return tools;
-}
-
 export function createDATools(client: DAAdminClient) {
-  return withLogging({
+  return {
     da_list_sources: tool({
       description:
         'List all sources and directories in a DA repository at a given path. Returns a list of files and folders with their metadata.',
@@ -349,5 +336,5 @@ export function createDATools(client: DAAdminClient) {
         }
       },
     }),
-  });
+  };
 }
