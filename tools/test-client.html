@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DA Agent Test Client</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body { font-family: system-ui, sans-serif; display: flex; flex-direction: column; height: 100vh; background: #fafafa; }
+
+    /* ── Config bar ── */
+    #config {
+      padding: 10px 14px;
+      background: #f0f0f0;
+      border-bottom: 1px solid #ddd;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: flex-end;
+    }
+    .field { display: flex; flex-direction: column; gap: 3px; }
+    .field label { font-size: 11px; color: #666; font-weight: 500; text-transform: uppercase; letter-spacing: 0.4px; }
+    .field input, .field select {
+      padding: 5px 8px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 13px;
+      background: white;
+    }
+    #agentUrl { width: 220px; }
+    #imsToken { width: 200px; }
+    #org, #site, #path { width: 130px; }
+    #view { width: 90px; }
+    #clearBtn {
+      padding: 5px 12px;
+      background: #666;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      align-self: flex-end;
+    }
+
+    /* ── Messages ── */
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .msg {
+      max-width: 75%;
+      padding: 9px 13px;
+      border-radius: 10px;
+      font-size: 14px;
+      line-height: 1.55;
+      word-break: break-word;
+    }
+    .msg.user    { align-self: flex-end;   background: #0070f3; color: white; }
+    .msg.assistant { align-self: flex-start; background: #ececec; color: #111; white-space: pre-wrap; }
+
+    /* ── Tool card ── */
+    .tool-card {
+      align-self: flex-start;
+      width: min(480px, 80%);
+      border: 1px solid #d0d0d0;
+      border-radius: 10px;
+      font-size: 13px;
+      overflow: hidden;
+      background: white;
+    }
+    .tool-card.needs-approval { border-color: #f5a623; }
+    .tool-card.done           { border-color: #d0d0d0; }
+    .tool-card.error          { border-color: #e57373; }
+
+    /* Collapsed header — always visible, click to expand */
+    .tool-summary {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      cursor: pointer;
+      user-select: none;
+      background: #f7f7f7;
+      border-bottom: 1px solid transparent;
+      transition: background 0.1s;
+      min-height: 40px;
+    }
+    .tool-summary:hover { background: #efefef; }
+    .tool-card.open .tool-summary { border-bottom-color: #e0e0e0; }
+
+    .tool-icon { font-size: 14px; line-height: 1; flex-shrink: 0; }
+    .tool-name-label { font-weight: 600; color: #333; flex: 1; font-size: 12px; }
+    .tool-status {
+      font-size: 11px;
+      padding: 2px 7px;
+      border-radius: 10px;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+    .tool-status.running  { background: #e3f2fd; color: #1565c0; }
+    .tool-status.ok       { background: #e8f5e9; color: #2e7d32; }
+    .tool-status.approval { background: #fff3e0; color: #e65100; }
+    .tool-status.rejected { background: #fce4ec; color: #880e4f; }
+    .tool-status.error    { background: #ffebee; color: #c62828; }
+    .tool-chevron { font-size: 10px; color: #999; transition: transform 0.15s; flex-shrink: 0; }
+    .tool-card.open .tool-chevron { transform: rotate(90deg); }
+
+    /* Expandable body */
+    .tool-body {
+      display: none;
+      padding: 10px 12px;
+      display: none;
+    }
+    .tool-card.open .tool-body { display: block; }
+
+    .tool-section-label {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #999;
+      margin-bottom: 4px;
+    }
+    .tool-section-label + .tool-section-label { margin-top: 10px; }
+
+    .tool-code {
+      font-family: monospace;
+      font-size: 11px;
+      color: #333;
+      background: #f5f5f5;
+      border-radius: 4px;
+      padding: 7px 9px;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 140px;
+      overflow-y: auto;
+    }
+    .tool-code.output { background: #f0faf0; }
+    .tool-card.error .tool-code.output { background: #fff5f5; color: #c62828; }
+
+    /* Approval buttons — shown in body when expanded, and as a footer strip when collapsed */
+    .approval-footer {
+      display: flex;
+      gap: 8px;
+      padding: 10px 12px;
+      border-top: 1px solid #f5a623;
+      background: #fffaf3;
+      align-items: center;
+      min-height: 48px;
+    }
+    .tool-card.open .approval-footer { border-top-color: #e0e0e0; background: #fafafa; }
+
+    .btn-approve, .btn-reject {
+      padding: 7px 18px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      min-height: 32px;
+    }
+    .btn-approve { background: #2e7d32; color: white; }
+    .btn-reject  { background: #c62828; color: white; }
+    .btn-approve:disabled, .btn-reject:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    /* ── Bottom bar ── */
+    #bottom { border-top: 1px solid #ddd; background: white; }
+    #status { font-size: 11px; color: #888; padding: 3px 14px; min-height: 18px; }
+    #input-row { padding: 8px 12px 10px; display: flex; gap: 8px; }
+    #msgInput {
+      flex: 1; padding: 8px 12px;
+      border: 1px solid #ccc; border-radius: 6px;
+      font-size: 14px; outline: none;
+    }
+    #msgInput:focus { border-color: #0070f3; }
+    #sendBtn {
+      padding: 8px 20px;
+      background: #0070f3; color: white;
+      border: none; border-radius: 6px;
+      cursor: pointer; font-size: 14px; font-weight: 500;
+    }
+    #sendBtn:disabled { background: #aaa; cursor: not-allowed; }
+
+    #debugToggle { font-size: 11px; color: #bbb; cursor: pointer; padding: 2px 14px 4px; display: inline-block; }
+    #debugBox {
+      display: none; margin: 0 12px 8px; padding: 8px;
+      background: #111; color: #0f0; font-family: monospace;
+      font-size: 11px; border-radius: 4px; max-height: 140px;
+      overflow-y: auto; white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+
+<div id="config">
+  <div class="field">
+    <label>Agent URL</label>
+    <input id="agentUrl" value="http://localhost:5173/chat">
+  </div>
+  <div class="field">
+    <label>IMS Token</label>
+    <input id="imsToken" type="password" placeholder="ims bearer token">
+  </div>
+  <div class="field">
+    <label>Org</label>
+    <input id="org" value="aem-sandbox">
+  </div>
+  <div class="field">
+    <label>Site</label>
+    <input id="site" value="block-collection">
+  </div>
+  <div class="field">
+    <label>Path</label>
+    <input id="path" value="cars.html">
+  </div>
+  <div class="field">
+    <label>View</label>
+    <select id="view">
+      <option value="edit">edit</option>
+      <option value="preview">preview</option>
+    </select>
+  </div>
+  <button id="clearBtn" onclick="clearChat()">Clear</button>
+</div>
+
+<div id="messages"></div>
+
+<div id="bottom">
+  <div id="status"></div>
+  <span id="debugToggle" onclick="toggleDebug()">▶ debug</span>
+  <div id="debugBox"></div>
+  <div id="input-row">
+    <input id="msgInput" type="text" placeholder="Ask something…" onkeydown="if(event.key==='Enter')send()">
+    <button id="sendBtn" onclick="send()">Send</button>
+  </div>
+</div>
+
+<script>
+  const APPROVAL_TOOLS = new Set(['da_create_source', 'da_update_source', 'da_delete_source', 'da_move_content']);
+
+  // Full conversation history in CoreMessage format:
+  //   { role: 'user',      content: string }
+  //   { role: 'assistant', content: string | [{ type:'tool-call', toolCallId, toolName, args }] }
+  //   { role: 'tool',      content: [{ type:'tool-result', toolCallId, toolName, result }] }
+  //   { role: 'tool',      content: [{ type:'tool-approval-response', approvalId, approved }] }
+  let messages = [];
+
+  // toolCallId → { approvalId } for tools awaiting approval
+  let pendingApprovals = {};
+
+  // toolCallId → toolName (populated on tool-input-available; tool-output-available lacks toolName)
+  let toolNameById = {};
+
+  // Buffer for the current assistant text chunk (committed on text-end or finish-message)
+  let currentAssistantText = null;
+
+  let idCounter = 0;
+  const nextId = () => String(++idCounter);
+
+  // ── UI helpers ───────────────────────────────────────────────────────────────
+
+  function setStatus(text) { document.getElementById('status').textContent = text; }
+
+  function setBusy(on) {
+    document.getElementById('sendBtn').disabled = on;
+    document.getElementById('msgInput').disabled = on;
+  }
+
+  function debug(text) {
+    const box = document.getElementById('debugBox');
+    box.textContent += text + '\n';
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function toggleDebug() {
+    const box = document.getElementById('debugBox');
+    const tog = document.getElementById('debugToggle');
+    const visible = box.style.display === 'block';
+    box.style.display = visible ? 'none' : 'block';
+    tog.textContent = (visible ? '▶' : '▼') + ' debug';
+  }
+
+  function scrollToBottom() {
+    document.getElementById('messages').scrollTop = 9999999;
+  }
+
+  function addUserBubble(text) {
+    const el = document.createElement('div');
+    el.className = 'msg user';
+    el.textContent = text;
+    document.getElementById('messages').appendChild(el);
+    scrollToBottom();
+  }
+
+  function addAssistantBubble() {
+    const el = document.createElement('div');
+    el.className = 'msg assistant';
+    document.getElementById('messages').appendChild(el);
+    scrollToBottom();
+    return el;
+  }
+
+  // ── Tool card ────────────────────────────────────────────────────────────────
+
+  function addToolCard(toolCallId, toolName, inputObj) {
+    const needsApproval = APPROVAL_TOOLS.has(toolName);
+
+    let display = inputObj;
+    try {
+      const p = typeof inputObj === 'string' ? JSON.parse(inputObj) : inputObj;
+      if (p?.content?.length > 200) display = { ...p, content: p.content.slice(0, 200) + '…' };
+    } catch { /* keep as-is */ }
+
+    const card = document.createElement('div');
+    card.className = 'tool-card' + (needsApproval ? ' needs-approval' : '');
+    card.id = `tc-${toolCallId}`;
+
+    card.innerHTML = `
+      <div class="tool-summary" onclick="toggleToolCard('${toolCallId}')">
+        <span class="tool-icon">${needsApproval ? '⚠️' : '🔧'}</span>
+        <span class="tool-name-label">${toolName}</span>
+        <span class="tool-status ${needsApproval ? 'approval' : 'running'}" id="ts-${toolCallId}">
+          ${needsApproval ? 'needs approval' : 'running…'}
+        </span>
+        <span class="tool-chevron">▶</span>
+      </div>
+      <div class="tool-body" id="tb-${toolCallId}">
+        <div class="tool-section-label">Input</div>
+        <div class="tool-code">${escHtml(JSON.stringify(display, null, 2))}</div>
+        <div id="tout-${toolCallId}"></div>
+      </div>
+      ${needsApproval ? `
+      <div class="approval-footer" id="ar-${toolCallId}">
+        <button class="btn-approve" onclick="approve('${toolCallId}', true)">Approve</button>
+        <button class="btn-reject"  onclick="approve('${toolCallId}', false)">Reject</button>
+      </div>` : ''}
+    `;
+
+    document.getElementById('messages').appendChild(card);
+    scrollToBottom();
+  }
+
+  function toggleToolCard(toolCallId) {
+    document.getElementById(`tc-${toolCallId}`)?.classList.toggle('open');
+  }
+
+  function setToolStatus(toolCallId, statusClass, label) {
+    const el = document.getElementById(`ts-${toolCallId}`);
+    if (el) { el.className = `tool-status ${statusClass}`; el.textContent = label; }
+  }
+
+  function showToolResult(toolCallId, output, isError) {
+    const card = document.getElementById(`tc-${toolCallId}`);
+    if (card) { card.classList.remove('needs-approval'); card.classList.add(isError ? 'error' : 'done'); }
+
+    setToolStatus(toolCallId, isError ? 'error' : 'ok', isError ? 'error' : 'done');
+
+    const outEl = document.getElementById(`tout-${toolCallId}`);
+    if (outEl) {
+      const text = typeof output === 'string' ? output : JSON.stringify(output, null, 2);
+      outEl.innerHTML = `
+        <div class="tool-section-label" style="margin-top:10px">Output</div>
+        <div class="tool-code output">${escHtml(text.length > 400 ? text.slice(0, 400) + '…' : text)}</div>
+      `;
+    }
+
+    document.getElementById(`ar-${toolCallId}`)?.remove();
+    scrollToBottom();
+  }
+
+  function escHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function clearChat() {
+    messages = []; currentAssistantText = null; pendingApprovals = {}; toolNameById = {};
+    document.getElementById('messages').innerHTML = '';
+    document.getElementById('debugBox').textContent = '';
+    setStatus(''); setBusy(false);
+  }
+
+  // ── Approval ─────────────────────────────────────────────────────────────────
+
+  async function approve(toolCallId, approved) {
+    const pending = pendingApprovals[toolCallId];
+    if (!pending) return;
+    delete pendingApprovals[toolCallId];
+
+    document.getElementById(`ar-${toolCallId}`)?.querySelectorAll('button').forEach(b => b.disabled = true);
+
+    if (!approved) {
+      showToolResult(toolCallId, 'Rejected by user', false);
+      setToolStatus(toolCallId, 'rejected', 'rejected');
+    } else {
+      setToolStatus(toolCallId, 'running', 'approved…');
+    }
+
+    // Send approval response using the approvalId from the tool-approval-request event
+    messages.push({
+      role: 'tool',
+      content: [{ type: 'tool-approval-response', approvalId: pending.approvalId, approved }],
+    });
+
+    await sendMessages();
+  }
+
+  // ── Send ─────────────────────────────────────────────────────────────────────
+
+  async function send() {
+    const input = document.getElementById('msgInput');
+    const text = input.value.trim();
+    if (!text || document.getElementById('sendBtn').disabled) return;
+
+    messages.push({ role: 'user', content: text });
+    addUserBubble(text);
+    input.value = '';
+    await sendMessages();
+  }
+
+  async function sendMessages() {
+    setBusy(true);
+    setStatus('Thinking…');
+    currentAssistantText = null;
+
+    const body = {
+      messages,
+      imsToken: document.getElementById('imsToken').value || undefined,
+      pageContext: {
+        org:  document.getElementById('org').value,
+        site: document.getElementById('site').value,
+        path: document.getElementById('path').value,
+        view: document.getElementById('view').value,
+      },
+    };
+
+    let assistantTextEl = null;
+    let assistantTextAccum = '';
+
+    try {
+      const res = await fetch(document.getElementById('agentUrl').value, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+      if (!res.ok) {
+        setStatus(`Error ${res.status}: ${await res.text()}`);
+        setBusy(false);
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop();
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const raw = line.slice(6).trim();
+          if (!raw || raw === '[DONE]') continue;
+          debug(raw);
+
+          let part;
+          try { part = JSON.parse(raw); } catch { continue; }
+
+          switch (part.type) {
+            case 'text-start':
+              assistantTextAccum = '';
+              assistantTextEl = addAssistantBubble();
+              break;
+
+            case 'text-delta':
+              assistantTextAccum += part.delta ?? part.textDelta ?? part.text ?? '';
+              if (assistantTextEl) assistantTextEl.textContent = assistantTextAccum;
+              scrollToBottom();
+              break;
+
+            case 'text-end':
+              if (assistantTextAccum) {
+                messages.push({ role: 'assistant', content: assistantTextAccum });
+              }
+              assistantTextEl = null; assistantTextAccum = '';
+              break;
+
+            // Complete tool call — add assistant tool-call message
+            case 'tool-call':
+            case 'tool-input-available': {
+              const { toolCallId, toolName } = part;
+              const args = part.input ?? part.args ?? {};
+              toolNameById[toolCallId] = toolName;  // remember for tool-output-available
+              messages.push({ role: 'assistant', content: [{ type: 'tool-call', toolCallId, toolName, input: args }] });
+              addToolCard(toolCallId, toolName, args);
+              break;
+            }
+
+            // Tool needs explicit approval — the tool-call event already added the assistant message.
+            // Append the tool-approval-request part to that same message so the server can match
+            // the approvalId when we send the tool-approval-response.
+            case 'tool-approval-request': {
+              const { toolCallId, toolName, approvalId } = part;
+              const args = part.input ?? part.args ?? {};
+              // Find the assistant message containing this tool-call and append the approval-request part
+              for (let i = messages.length - 1; i >= 0; i--) {
+                const msg = messages[i];
+                if (msg.role === 'assistant' && Array.isArray(msg.content)) {
+                  if (msg.content.some(p => p.type === 'tool-call' && p.toolCallId === toolCallId)) {
+                    msg.content.push({ type: 'tool-approval-request', approvalId, toolCallId });
+                    break;
+                  }
+                }
+              }
+              if (!document.getElementById(`tc-${toolCallId}`)) addToolCard(toolCallId, toolName, args);
+              pendingApprovals[toolCallId] = { approvalId: approvalId ?? toolCallId };
+              break;
+            }
+
+            // Tool result — add tool-result message
+            case 'tool-result':
+            case 'tool-output-available': {
+              const { toolCallId } = part;
+              const toolName = part.toolName ?? toolNameById[toolCallId];
+              const raw = part.output ?? part.result;
+              const isError = raw && typeof raw === 'object' && 'error' in raw;
+              const output = typeof raw === 'string'
+                ? { type: 'text', value: raw }
+                : { type: 'json', value: raw };
+              messages.push({ role: 'tool', content: [{ type: 'tool-result', toolCallId, toolName, output }] });
+              showToolResult(toolCallId, raw, isError);
+              break;
+            }
+
+            case 'finish-message':
+            case 'finish':
+              // Flush any trailing text that didn't get a text-end event
+              if (assistantTextAccum) {
+                messages.push({ role: 'assistant', content: assistantTextAccum });
+                assistantTextEl = null; assistantTextAccum = '';
+              }
+              setStatus('');
+              break;
+
+            case 'error':
+              setStatus(`Agent error: ${part.errorText ?? part.error ?? JSON.stringify(part)}`);
+              break;
+          }
+        }
+      }
+    } catch (err) {
+      setStatus(`Network error: ${err.message}`);
+    }
+
+    if (Object.keys(pendingApprovals).length === 0) {
+      setBusy(false);
+      setStatus('');
+    } else {
+      setStatus('Waiting for approval…');
+    }
+  }
+</script>
+</body>
+</html>

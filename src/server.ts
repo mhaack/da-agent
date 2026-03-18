@@ -1,10 +1,8 @@
 import { createAmazonBedrock } from '@ai-sdk/amazon-bedrock';
 import {
   streamText,
-  convertToModelMessages,
-  pruneMessages,
   stepCountIs,
-  type UIMessage,
+  type ModelMessage,
 } from 'ai';
 import { z } from 'zod';
 import { DAAdminClient } from './da-admin/client.js';
@@ -53,6 +51,87 @@ export default {
   },
 } satisfies ExportedHandler<Env>;
 
+/**
+ * Scan messages for tool-approval-response entries, execute the approved tools
+ * using the args stored in the preceding assistant message, and replace each
+ * approval-response with a proper tool-result so streamText sees clean history.
+ * Also strips the tool-approval-request parts from assistant messages.
+ */
+async function resolveApprovals(
+  messages: any[],
+  daTools: Record<string, any>,
+): Promise<any[]> {
+  // Shallow-clone the array; deep-clone content arrays we may mutate
+  const result: any[] = messages.map((m) => ({
+    ...m,
+    content: Array.isArray(m.content) ? [...m.content] : m.content,
+  }));
+
+  for (let i = result.length - 1; i >= 0; i--) {
+    const msg = result[i];
+    if (msg.role !== 'tool' || !Array.isArray(msg.content)) continue;
+
+    const approvalResp = msg.content.find((p: any) => p.type === 'tool-approval-response');
+    if (!approvalResp) continue;
+
+    const { approvalId, approved } = approvalResp;
+    let toolCallId: string | undefined;
+    let toolName: string | undefined;
+    let toolArgs: any;
+
+    // Walk backwards to find the assistant message with the matching approval-request
+    for (let j = i - 1; j >= 0; j--) {
+      const prev = result[j];
+      if (prev.role !== 'assistant' || !Array.isArray(prev.content)) continue;
+
+      const req = prev.content.find(
+        (p: any) => p.type === 'tool-approval-request' && p.approvalId === approvalId,
+      );
+      if (!req) continue;
+
+      toolCallId = req.toolCallId;
+      const call = prev.content.find(
+        (p: any) => p.type === 'tool-call' && p.toolCallId === toolCallId,
+      );
+      if (call) {
+        toolName = call.toolName;
+        toolArgs = call.input;
+      }
+
+      // Remove the approval-request part — streamText only needs the tool-call + tool-result
+      prev.content = prev.content.filter(
+        (p: any) => !(p.type === 'tool-approval-request' && p.approvalId === approvalId),
+      );
+      break;
+    }
+
+    if (!toolCallId || !toolName) continue;
+
+    let output: any;
+    if (approved && daTools[toolName]?.execute) {
+      try {
+        console.log(`[resolveApprovals] executing approved tool: ${toolName}`);
+        output = await daTools[toolName].execute(toolArgs, { toolCallId, messages: [] });
+      } catch (e) {
+        output = { error: String(e) };
+      }
+    } else {
+      output = { message: 'Action rejected by user.' };
+    }
+
+    const wrappedOutput = typeof output === 'string'
+      ? { type: 'text', value: output }
+      : { type: 'json', value: output };
+
+    result[i] = {
+      role: 'tool',
+      content: [{ type: 'tool-result', toolCallId, toolName, output: wrappedOutput }],
+    };
+  }
+
+  return result;
+}
+
 async function handleChat(request: Request, env: Env): Promise<Response> {
   let body: unknown;
   try {
@@ -92,8 +171,14 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
     ? await createCollabClient(sourceUrl, imsToken, pageContext.org, env.DACOLLAB)
     : null;
 
+  // Process any pending tool approvals before passing messages to streamText.
+  // The AI SDK's needsApproval is designed for stateful sessions; since each request
+  // creates a fresh streamText call, we resolve approvals here instead.
+  const processedMessages = await resolveApprovals(messages, daTools);
+
   const result = streamText({
-    model: bedrock('anthropic.claude-3-5-sonnet-20241022-v2:0'),
+    //model: bedrock('anthropic.claude-3-5-sonnet-20241022-v2:0'),
+    model: bedrock('global.anthropic.claude-sonnet-4-6'),
     onError: (error) => {
       console.error('streamText error:', JSON.stringify(error));
       collab?.disconnect();
@@ -102,10 +187,7 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
       collab?.disconnect();
     },
     system: buildSystemPrompt(pageContext),
-    messages: pruneMessages({
-      messages: await convertToModelMessages(messages as UIMessage[]),
-      toolCalls: 'before-last-2-messages',
-    }),
+    messages: processedMessages as ModelMessage[],
     tools: daTools,
     stopWhen: stepCountIs(5),
   });
