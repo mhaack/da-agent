@@ -1,19 +1,55 @@
 /**
  * DA Tools
  * Vercel AI SDK tool definitions wrapping DAAdminClient
+ * When in edit view with a collab session, read/write the current doc via the shared Y doc.
  */
 
 import { tool } from 'ai';
 import { z } from 'zod';
 import type { DAAdminClient } from '../da-admin/client';
 import type { DAAPIError } from '../da-admin/types';
+import type { CollabClient } from '../collab-client';
 import { ensureHtmlExtension } from './utils';
 
 function isDAAPIError(e: unknown): e is DAAPIError {
   return typeof e === 'object' && e !== null && 'status' in e && 'message' in e;
 }
 
-export function createDATools(client: DAAdminClient) {
+export type PageContext = {
+  org: string;
+  site: string;
+  path: string;
+  view?: string;
+};
+
+export type DAToolsOptions = {
+  pageContext?: PageContext;
+  collab?: CollabClient | null;
+};
+
+function useCollabForDoc(
+  org: string,
+  repo: string,
+  path: string,
+  options?: DAToolsOptions,
+): boolean {
+  if (!options?.pageContext || !options?.collab?.isConnected) return false;
+  const {
+    org: ctxOrg,
+    site: ctxSite,
+    path: ctxPath,
+    view,
+  } = options.pageContext;
+  if (view !== 'edit') return false;
+  return (
+    ctxOrg === org
+    && ctxSite === repo
+    && ensureHtmlExtension(ctxPath) === ensureHtmlExtension(path)
+  );
+}
+
+export function createDATools(client: DAAdminClient, options?: DAToolsOptions) {
+  const opts = options;
   return {
     da_list_sources: tool({
       description:
@@ -52,6 +88,16 @@ export function createDATools(client: DAAdminClient) {
       }),
       execute: async ({ org, repo, path }) => {
         try {
+          if (useCollabForDoc(org, repo, path, opts) && opts?.collab) {
+            const content = opts.collab.getContent();
+            if (content != null) {
+              return {
+                path: ensureHtmlExtension(path),
+                content,
+                source: 'collab',
+              };
+            }
+          }
           return await client.getSource(org, repo, ensureHtmlExtension(path));
         } catch (e) {
           if (isDAAPIError(e)) return { error: e.message, status: e.status };
@@ -122,14 +168,15 @@ export function createDATools(client: DAAdminClient) {
       execute: async ({
         org, repo, path, content, contentType,
       }) => {
+        const pathWithExt = ensureHtmlExtension(path);
         try {
-          return await client.updateSource(
-            org,
-            repo,
-            ensureHtmlExtension(path),
-            content,
-            contentType,
-          );
+          if (useCollabForDoc(org, repo, path, opts) && opts?.collab) {
+            opts.collab.applyContent(content);
+            await client.updateSource(org, repo, pathWithExt, content, contentType, { initiator: 'collab' });
+            opts.collab.disconnect();
+            return { path: pathWithExt, source: 'collab', updated: true };
+          }
+          return await client.updateSource(org, repo, pathWithExt, content, contentType);
         } catch (e) {
           if (isDAAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };

@@ -56,7 +56,13 @@ export default {
  * using the args stored in the preceding assistant message, and replace each
  * approval-response with a proper tool-result so streamText sees clean history.
  * Also strips the tool-approval-request parts from assistant messages.
+ *
+ * Dedup: the client keeps sending the original tool-approval-response forever
+ * (the stream does not return resolved history). Only the last message can be a
+ * fresh approval; older approval-response messages get a synthetic tool-result.
  */
+/* eslint-disable @typescript-eslint/no-explicit-any, no-plusplus, no-continue */
+/* eslint-disable no-loop-func, no-await-in-loop -- chat payloads are loosely typed */
 async function resolveApprovals(
   messages: any[],
   daTools: Record<string, any>,
@@ -107,10 +113,31 @@ async function resolveApprovals(
 
     if (!toolCallId || !toolName) continue;
 
+    // A tool-approval-response that was already processed in a previous request
+    // will have subsequent messages after it (e.g. assistant text, new user turns).
+    // A NEW approval-response is always the last message (client appends it and sends).
+    const alreadyResolved = i < result.length - 1;
+    if (alreadyResolved) {
+      const staleOutput = approved
+        ? { type: 'text' as const, value: '(previously executed)' }
+        : { type: 'json' as const, value: { message: 'Action rejected by user.' } };
+      result[i] = {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId,
+            toolName,
+            output: staleOutput,
+          },
+        ],
+      };
+      continue;
+    }
+
     let output: any;
     if (approved && daTools[toolName]?.execute) {
       try {
-        console.log(`[resolveApprovals] executing approved tool: ${toolName}`);
         output = await daTools[toolName].execute(toolArgs, { toolCallId, messages: [] });
       } catch (e) {
         output = { error: String(e) };
@@ -125,12 +152,21 @@ async function resolveApprovals(
 
     result[i] = {
       role: 'tool',
-      content: [{ type: 'tool-result', toolCallId, toolName, output: wrappedOutput }],
+      content: [
+        {
+          type: 'tool-result',
+          toolCallId,
+          toolName,
+          output: wrappedOutput,
+        },
+      ],
     };
   }
 
   return result;
 }
+/* eslint-enable @typescript-eslint/no-explicit-any, no-plusplus, no-continue */
+/* eslint-enable no-loop-func, no-await-in-loop */
 
 async function handleChat(request: Request, env: Env): Promise<Response> {
   let body: unknown;
@@ -147,12 +183,17 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
 
   const { messages, pageContext, imsToken } = parsed.data;
 
-  console.log('pageContext:', pageContext);
-
   const bedrock = createAmazonBedrock({
     region: env.AWS_REGION,
     apiKey: env.AWS_BEARER_TOKEN_BEDROCK,
   });
+
+  const daOrigin = env.DA_ORIGIN ?? 'https://admin.da.live';
+  const sourceUrl = `${daOrigin}/source/${pageContext?.org}/${pageContext?.site}/${ensureHtmlExtension(pageContext?.path ?? '')}`;
+
+  const collab = pageContext?.view === 'edit' && imsToken && env.DACOLLAB
+    ? await createCollabClient(sourceUrl, imsToken, pageContext.org, env.DACOLLAB)
+    : null;
 
   const daTools = imsToken && env.DAADMIN
     ? createDATools(
@@ -160,16 +201,12 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
         apiToken: imsToken,
         daadminService: env.DAADMIN,
       }),
+      {
+        pageContext: pageContext ?? undefined,
+        collab: collab ?? undefined,
+      },
     )
     : {};
-
-  const daOrigin = env.DA_ORIGIN ?? 'https://admin.da.live';
-  const sourceUrl = `${daOrigin}/source/${pageContext?.org}/${pageContext?.site}/${ensureHtmlExtension(pageContext?.path ?? '')}`;
-
-  console.log(`[server] collab conditions: view=${pageContext?.view}, hasImsToken=${!!imsToken}, hasDACOLLAB=${!!env.DACOLLAB}`);
-  const collab = pageContext?.view === 'edit' && imsToken && env.DACOLLAB
-    ? await createCollabClient(sourceUrl, imsToken, pageContext.org, env.DACOLLAB)
-    : null;
 
   // Process any pending tool approvals before passing messages to streamText.
   // The AI SDK's needsApproval is designed for stateful sessions; since each request
@@ -177,7 +214,7 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   const processedMessages = await resolveApprovals(messages, daTools);
 
   const result = streamText({
-    //model: bedrock('anthropic.claude-3-5-sonnet-20241022-v2:0'),
+    // model: bedrock('anthropic.claude-3-5-sonnet-20241022-v2:0'),
     model: bedrock('global.anthropic.claude-sonnet-4-6'),
     onError: (error) => {
       console.error('streamText error:', JSON.stringify(error));

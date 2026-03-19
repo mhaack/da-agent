@@ -197,6 +197,7 @@ export class DAAdminClient {
     path: string,
     content: string,
     contentType?: string,
+    options?: { initiator?: string },
   ): Promise<DAOperationResponse> {
     const endpoint = `/source/${org}/${repo}/${path}`;
 
@@ -207,9 +208,15 @@ export class DAAdminClient {
     const formData = new FormData();
     formData.append('data', blob);
 
+    const headers: Record<string, string> = {};
+    if (options?.initiator) {
+      headers['X-DA-Initiator'] = options.initiator;
+    }
+
     return this.request<DAOperationResponse>(endpoint, {
       method: 'POST',
       body: formData,
+      headers,
     });
   }
 

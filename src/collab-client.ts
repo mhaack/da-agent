@@ -1,17 +1,16 @@
 /**
  * CollabClient - Connects to da-collab as the AI Assistant
  *
- * Phase 1: Presence Only
  * - Connects to da-collab via WebSocket (using DACOLLAB service binding)
  * - Sets awareness state (purple cursor, "AI Assistant (username)")
- * - (Minimal) Sets awareness cursor at document start
- * - Disconnects after request completes
- *
- * Content edits still go through MCP → da-admin → R2
+ * - Read/write document content via getContent() and applyContent(html) using
+ *   doc2aem / aem2doc from @da-tools/da-parser (same Y.Doc prosemirror fragment as editor)
+ * - Disconnects after request completes (or after applyContent when writing)
  */
 
 import * as Y from 'yjs';
 import { WebsocketProvider } from 'y-websocket';
+import { aem2doc, doc2aem } from '@da-tools/da-parser';
 
 type ActivityState = 'connected' | 'thinking' | 'previewing' | 'done';
 
@@ -249,6 +248,33 @@ export class CollabClient {
     } catch (error) {
       console.warn('[CollabClient] Failed to set cursor at start:', error);
     }
+  }
+
+  /**
+   * Return the current document as EDS HTML (same format as da-admin source).
+   * Uses doc2aem(ydoc) on the shared prosemirror XmlFragment.
+   */
+  getContent(): string | null {
+    if (!this.ydoc) return null;
+    return doc2aem(this.ydoc);
+  }
+
+  /**
+   * Apply EDS HTML to the shared Y doc (editor sees it live).
+   * Uses aem2doc(html, ydoc) inside a transaction; clears the prosemirror fragment first.
+   */
+  applyContent(html: string): void {
+    if (!this.ydoc) return;
+    this.ydoc.transact(() => {
+      const rootType = this.ydoc!.getXmlFragment('prosemirror');
+      rootType.delete(0, rootType.length);
+      this.ydoc!.share.forEach((type) => {
+        if (type instanceof Y.Map) {
+          type.clear();
+        }
+      });
+      aem2doc(html, this.ydoc!);
+    });
   }
 
   /**
