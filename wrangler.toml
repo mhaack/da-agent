@@ -14,6 +14,23 @@ enabled = true
 port = 5173
 
 # ----------------------------------------------------------------------
+# CI environment
+[env.ci]
+name = "da-agent-ci"
+
+services = [
+  { binding = "DAADMIN", service = "da-admin-stage" },
+  { binding = "DACOLLAB", service = "da-collab-stage" },
+]
+
+[env.ci.vars]
+AWS_REGION = "us-west-2"
+ENVIRONMENT = "ci"
+VERSION = "@@VERSION@@-ci"
+RETURN_STACK_TRACES = "false"
+DA_ORIGIN = "https://admin.da.live"
+
+# ----------------------------------------------------------------------
 # production environment
 [env.production]
 name = "da-agent"

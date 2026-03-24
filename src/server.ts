@@ -179,11 +179,15 @@ async function loadSkills(client: DAAdminClient, org: string, site: string): Pro
     const pathPrefix = `/${org}/${site}/`;
     const results = await Promise.all(
       mdFiles.map((f) => {
-        const relativePath = f.path.startsWith(pathPrefix) ? f.path.slice(pathPrefix.length) : f.path;
-        return client.getSource(org, site, relativePath).then((r) => r as unknown as string).catch((e) => {
-          console.log(`Skills: failed to load ${f.name}:`, e);
-          return null;
-        });
+        const relativePath = f.path.startsWith(pathPrefix)
+          ? f.path.slice(pathPrefix.length)
+          : f.path;
+        return client.getSource(org, site, relativePath)
+          .then((r) => r as unknown as string)
+          .catch((e) => {
+            console.log(`Skills: failed to load ${f.name}:`, e);
+            return null;
+          });
       }),
     );
     const loaded = results.filter(Boolean) as string[];

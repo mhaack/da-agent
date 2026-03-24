@@ -1,16 +1,26 @@
 {
   "name": "da-agent",
   "version": "1.0.0",
-  "private": true,
   "description": "AI assistant worker for Document Authoring (DA) platform",
   "license": "Apache-2.0",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/adobe-rnd/da-agent.git"
+  },
   "scripts": {
     "dev": "wrangler dev -e dev",
-    "deploy": "wrangler deploy -e production",
+    "deploy": "node prepare-deploy.js && wrangler deploy -e production -c wrangler-versioned.toml",
+    "deploy:ci": "node prepare-deploy.js && wrangler deploy -e ci -c wrangler-versioned.toml",
+    "deploy:production": "node prepare-deploy.js && wrangler deploy -e production -c wrangler-versioned.toml",
     "types": "wrangler types env.d.ts --include-runtime false",
     "type-check": "tsc --noEmit",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest watch",
+    "prepare": "husky",
+    "semantic-release": "semantic-release",
+    "semantic-release-dry": "semantic-release --dry-run --no-ci --branches $CI_BRANCH"
   },
   "dependencies": {
     "@ai-sdk/amazon-bedrock": "^4.0.0",
@@ -23,11 +33,22 @@
   "devDependencies": {
     "@adobe/eslint-config-helix": "^2.0.8",
     "@cloudflare/workers-types": "^4.20260227.0",
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/exec": "^6.0.3",
+    "@semantic-release/git": "^10.0.1",
+    "@semantic-release/npm": "^12.0.1",
     "@types/node": "^25.3.1",
     "@typescript-eslint/eslint-plugin": "^8.32.1",
     "@typescript-eslint/parser": "^8.32.1",
     "eslint": "^8.57.1",
+    "husky": "^9.1.7",
+    "lint-staged": "^15.5.1",
+    "semantic-release": "^24.2.7",
     "typescript": "^5.9.3",
+    "vitest": "^2.1.8",
     "wrangler": "^4.68.1"
+  },
+  "lint-staged": {
+    "*.{js,ts}": "eslint --fix"
   }
 }
