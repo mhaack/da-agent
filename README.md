@@ -1,235 +1,180 @@
-# Agent Starter
+# DA Agent
 
-![npm i agents command](./npm-agents-banner.svg)
+An AI assistant Cloudflare Worker for the [Document Authoring (DA)](https://da.live) platform. It exposes a streaming chat API backed by Claude on Amazon Bedrock and integrates directly with the DA Admin API to read, create, update, and manage content.
 
-<a href="https://deploy.workers.cloudflare.com/?url=https://github.com/cloudflare/agents-starter"><img src="https://deploy.workers.cloudflare.com/button" alt="Deploy to Cloudflare"/></a>
+## Features
 
-A starter template for building AI chat agents on Cloudflare, powered by the [Agents SDK](https://developers.cloudflare.com/agents/).
+- **Streaming chat** — Server-sent event stream via the Vercel AI SDK (`POST /chat`)
+- **DA tools** — Full set of DA Admin API operations available as LLM tools: list, get, create, update, delete, copy, move sources; versioning; media upload; fragment lookup
+- **Human-in-the-loop approval** — Destructive tools (create, update, delete, move) require explicit user confirmation before executing
+- **Collab integration** — When the user is in edit view, reads and writes go through the live Y.js collaborative session (`da-collab` service binding) so changes appear in real time
+- **Page context awareness** — The current org, site, path, and view are injected into the system prompt and used as defaults for all tool calls
+- **Custom skills** — Customers define reusable workflow instructions as markdown files stored at `/.da/skills/` in their DA repository; the agent loads and injects them automatically on each request
 
-Uses Workers AI (no API key required), with tools for weather, timezone detection, calculations with approval, and task scheduling.
+## Architecture
 
-## Quick start
-
-```bash
-npx create-cloudflare@latest --template cloudflare/agents-starter
-cd agents-starter
-npm install
-npm run dev
 ```
-
-Open [http://localhost:5173](http://localhost:5173) to see your agent in action.
-
-Try these prompts to see the different features:
-
-- **"What's the weather in Paris?"** — server-side tool (runs automatically)
-- **"What timezone am I in?"** — client-side tool (browser provides the answer)
-- **"Calculate 5000 \* 3"** — approval tool (asks you before running)
-- **"Remind me in 5 minutes to take a break"** — scheduling
+Client (DA authoring UI)
+  │  POST /chat  (messages, pageContext, imsToken)
+  ▼
+da-agent (Cloudflare Worker)
+  ├── Vercel AI SDK streamText → Amazon Bedrock (claude-sonnet-4-6)
+  ├── DA tools → DAADMIN service binding → da-admin Worker
+  ├── Collab client → DACOLLAB service binding → da-collab Worker
+  └── Skills loader → DAADMIN (reads /.da/skills/*.md)
+```
 
 ## Project structure
 
 ```
 src/
-  server.ts    # Chat agent with tools and scheduling
-  app.ts       # Chat UI built with Lit web components
-  client.ts    # Web component entry point
-  styles.css   # Plain CSS styles
+  server.ts            # Worker entry point, chat handler, system prompt, skills loader
+  collab-client.ts     # Y.js collab session client
+  da-admin/
+    client.ts          # DA Admin API client (wraps service binding calls)
+    types.ts           # TypeScript types for DA Admin API
+  tools/
+    tools.ts           # Vercel AI SDK tool definitions wrapping DAAdminClient
+    utils.ts           # Shared utilities (path helpers)
+samples/
+  skills/
+    translate-content.md  # Example skill file
+test/
+  server.test.ts       # Vitest tests
 ```
 
-## What's included
+## Local development
 
-- **AI Chat** — Streaming responses powered by Workers AI via `AIChatAgent`
-- **Three tool patterns** — server-side auto-execute, client-side (browser), and human-in-the-loop approval
-- **Scheduling** — one-time, delayed, and recurring (cron) tasks
-- **Reasoning display** — shows model thinking as it streams, collapses when done
-- **Debug mode** — toggle in the header to inspect raw message JSON for each message
-- **Lit UI** — Web components with custom styling and dark/light mode
-- **Real-time** — WebSocket connection with automatic reconnection and message persistence
+### Prerequisites
 
-## Making it your own
+- Node.js 22+
+- [Wrangler](https://developers.cloudflare.com/workers/wrangler/) CLI
+- AWS credentials with Bedrock access (for the Claude model)
+- Local instances of `da-admin` and `da-collab` Workers running
 
-### Name your project
-
-Update the name in `package.json` and `wrangler.jsonc` — the `name` in `wrangler.jsonc` becomes your deployed Worker's URL (`<name>.<subdomain>.workers.dev`).
-
-### Change the system prompt
-
-Edit the `system` string in `server.ts` to give your agent a different personality or focus area. This is the most impactful single change you can make.
-
-### Replace the demo tools with real ones
-
-The starter ships with demo tools (`getWeather` returns random data, `calculate` does basic arithmetic). Replace them with real implementations:
-
-```ts
-// In server.ts, replace a demo tool with a real API call:
-getWeather: tool({
-  description: "Get the current weather for a city",
-  inputSchema: z.object({ city: z.string() }),
-  execute: async ({ city }) => {
-    const res = await fetch(`https://api.weather.example/${city}`);
-    return res.json();
-  }
-}),
-```
-
-### Add your own tools
-
-Add new tools to the `tools` object in `server.ts`. There are three patterns:
-
-```ts
-// Auto-execute: runs on the server, no user interaction
-myTool: tool({
-  description: "...",
-  inputSchema: z.object({ /* ... */ }),
-  execute: async (input) => { /* return result */ }
-}),
-
-// Client-side: no execute function, browser provides the result
-// Handle it in app.tsx via the onToolCall callback
-browserTool: tool({
-  description: "...",
-  inputSchema: z.object({ /* ... */ })
-}),
-
-// Approval: add needsApproval to gate execution
-sensitiveTool: tool({
-  description: "...",
-  inputSchema: z.object({ /* ... */ }),
-  needsApproval: async (input) => true, // or conditional logic
-  execute: async (input) => { /* runs after approval */ }
-}),
-```
-
-### Customize scheduled task behavior
-
-When a scheduled task fires, `executeTask` runs on the server. It does its work and then uses `this.broadcast()` to notify connected clients (shown as a toast notification in the UI). Replace it with your own logic:
-
-```ts
-async executeTask(description: string, task: Schedule<string>) {
-  // Do the actual work
-  await sendEmail({ to: "user@example.com", subject: description });
-
-  // Notify connected clients
-  this.broadcast(
-    JSON.stringify({ type: "scheduled-task", description, timestamp: new Date().toISOString() })
-  );
-}
-```
-
-> **Why `broadcast()` instead of `saveMessages()`?** Injecting into chat history can cause the AI to see the notification as new context and re-trigger the same task in a loop. `broadcast()` sends a one-off event that the client displays separately from the conversation.
-
-### Remove scheduling
-
-If you don't need scheduling, remove `scheduleTask`, `getScheduledTasks`, and `cancelScheduledTask` from the tools object, the `executeTask` method, and the schedule-related imports (`getSchedulePrompt`, `scheduleSchema`, `Schedule`, `generateId`).
-
-### Add state beyond chat messages
-
-Use `this.setState()` and `this.state` for real-time state that syncs to all connected clients. See [Store and sync state](https://developers.cloudflare.com/agents/api-reference/store-and-sync-state/).
-
-### Add callable methods
-
-Expose agent methods as typed RPC that your client can call directly:
-
-```ts
-import { callable } from "agents";
-
-export class ChatAgent extends AIChatAgent<Env> {
-  @callable()
-  async getStats() {
-    return { messageCount: this.messages.length };
-  }
-}
-
-// Client-side:
-const stats = await agent.call("getStats");
-```
-
-See [Callable methods](https://developers.cloudflare.com/agents/api-reference/callable-methods/).
-
-### Connect to MCP servers
-
-Add external tools from MCP servers:
-
-```ts
-async onChatMessage(onFinish, options) {
-  // Connect to an MCP server
-  await this.mcp.connect("https://my-mcp-server.example/sse");
-
-  const result = streamText({
-    // ...
-    tools: {
-      ...myTools,
-      ...this.mcp.getAITools() // Include MCP tools
-    }
-  });
-}
-```
-
-See [MCP Client API](https://developers.cloudflare.com/agents/api-reference/mcp-client-api/).
-
-## Use a different AI model provider
-
-The starter uses [Workers AI](https://developers.cloudflare.com/workers-ai/) by default (no API key needed). To use a different provider:
-
-### OpenAI
+### Setup
 
 ```bash
-npm install @ai-sdk/openai
+npm install
 ```
 
-```ts
-// In server.ts, replace the model:
-import { openai } from "@ai-sdk/openai";
-
-// Inside onChatMessage:
-const result = streamText({
-  model: openai("gpt-5.2")
-  // ...
-});
-```
-
-Create a `.env` file with your API key:
+Copy `.dev.vars.example` to `.dev.vars` and fill in your credentials:
 
 ```
-OPENAI_API_KEY=your-key-here
+AWS_BEARER_TOKEN_BEDROCK=<your-aws-bearer-token>
 ```
 
-### Anthropic
+Start the dev server (connects to local `da-admin` and `da-collab` via service bindings):
 
 ```bash
-npm install @ai-sdk/anthropic
+npm run dev
 ```
 
-```ts
-import { anthropic } from "@ai-sdk/anthropic";
+The worker is available at `http://localhost:5173`.
 
-const result = streamText({
-  model: anthropic("claude-sonnet-4-20250514")
-  // ...
-});
-```
-
-Create a `.env` file with your API key:
+### Chat API
 
 ```
-ANTHROPIC_API_KEY=your-key-here
+POST /chat
+Content-Type: application/json
+Authorization: Bearer <ims-token>
+
+{
+  "messages": [...],
+  "pageContext": {
+    "org": "my-org",
+    "site": "my-site",
+    "path": "/docs/my-page",
+    "view": "edit"
+  },
+  "imsToken": "<ims-token>"
+}
 ```
 
-## Deploy
+Returns a streaming UI message response (Vercel AI SDK format).
+
+```
+HEAD /chat   →  200 OK  (health check / CORS preflight)
+```
+
+## Custom skills
+
+Skills let customers extend the agent with site-specific workflow instructions without any code changes.
+
+Create markdown files at `/.da/skills/<skill-name>.md` in your DA repository. The agent fetches all `.md` files from that folder on every request and injects their contents into the system prompt.
+
+### Skill format
+
+```markdown
+---
+name: My Skill
+description: What this skill does and when to use it.
+triggers:
+  - keyword or phrase that activates this skill
+---
+
+# My Skill
+
+Instructions for the agent...
+
+## Steps
+
+1. Step one
+2. Step two
+```
+
+See [`samples/skills/translate-content.md`](samples/skills/translate-content.md) for a full example that translates the current page into another language and saves it under a language-specific path (e.g. `/de/`, `/fr/`).
+
+## Tools
+
+| Tool | Description | Requires approval |
+|---|---|---|
+| `da_list_sources` | List files and folders in a repository path | No |
+| `da_get_source` | Read a file's content | No |
+| `da_create_source` | Create a new file | Yes |
+| `da_update_source` | Update an existing file | Yes |
+| `da_delete_source` | Delete a file | Yes |
+| `da_copy_content` | Copy a file to a new path | No |
+| `da_move_content` | Move a file to a new path | Yes |
+| `da_create_version` | Snapshot the current state of a file | No |
+| `da_get_versions` | Get version history for a file | No |
+| `da_lookup_media` | Look up a media asset | No |
+| `da_lookup_fragment` | Look up a content fragment | No |
+| `da_upload_media` | Upload a base64-encoded image or file | No |
+
+## Deployment
+
+Deployments are managed automatically via [semantic-release](https://semantic-release.gitbook.io/) on every push to `main`.
+
+The pipeline (`main.yaml`) runs three jobs:
+
+| Job | Trigger | What it does |
+|---|---|---|
+| **Test** | All branches | `npm run lint` + `npm test` |
+| **Test Deploy** | Non-main branches | Deploys to `da-agent-ci` (staging services) + semantic-release dry run |
+| **Release** | `main` only | Semantic-release: bumps version, updates `CHANGELOG.md`, deploys to CI then production, creates GitHub release |
+
+### Manual deploy
 
 ```bash
 npm run deploy
 ```
 
-Your agent is live on Cloudflare's global network. Messages persist in SQLite, streams resume on disconnect, and the agent hibernates when idle.
+### Required GitHub secrets
 
-## Learn more
+| Secret | Description |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | Cloudflare API token with Worker deploy permissions |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID |
 
-- [Agents SDK documentation](https://developers.cloudflare.com/agents/)
-- [Build a chat agent tutorial](https://developers.cloudflare.com/agents/getting-started/build-a-chat-agent/)
-- [Chat agents API reference](https://developers.cloudflare.com/agents/api-reference/chat-agents/)
-- [Workers AI models](https://developers.cloudflare.com/workers-ai/models/)
+### Environments
+
+| Wrangler env | Worker name | Services |
+|---|---|---|
+| `dev` (local) | `da-agent-local` | `da-admin-local`, `da-collab-local` |
+| `ci` | `da-agent-ci` | `da-admin-stage`, `da-collab-stage` |
+| `production` | `da-agent` | `da-admin`, `da-collab` |
 
 ## License
 
-MIT
+Apache-2.0
