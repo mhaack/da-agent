@@ -1,0 +1,4 @@
+{
+  "type": "sse",
+  "url": "https://analytics.example.com/mcp"
+}
