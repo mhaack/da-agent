@@ -1,3 +1,10 @@
+## [1.0.1](https://github.com/adobe-rnd/da-agent/compare/v1.0.0...v1.0.1) (2026-03-24)
+
+
+### Bug Fixes
+
+* decode IMS token to get real user name for collab presence ([f383474](https://github.com/adobe-rnd/da-agent/commit/f383474d9d3ca3bc6f9b07ca4d1a4b168eeb4269))
+
 # 1.0.0 (2026-03-24)
 
 
