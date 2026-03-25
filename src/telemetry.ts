@@ -10,7 +10,7 @@ export function initTelemetry(env: Env): void {
   if (initialized) return;
 
   if (!env.LANGFUSE_PUBLIC_KEY || !env.LANGFUSE_SECRET_KEY) {
-    console.debug('Telemetry: LANGFUSE_PUBLIC_KEY or LANGFUSE_SECRET_KEY not set, skipping telemetry setup');
+    console.warn('Telemetry: LANGFUSE_PUBLIC_KEY or LANGFUSE_SECRET_KEY not set, skipping telemetry setup');
     return;
   }
 
