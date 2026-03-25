@@ -53,121 +53,130 @@ export default {
 } satisfies ExportedHandler<Env>;
 
 /**
- * Scan messages for tool-approval-response entries, execute the approved tools
- * using the args stored in the preceding assistant message, and replace each
- * approval-response with a proper tool-result so streamText sees clean history.
- * Also strips the tool-approval-request parts from assistant messages.
+ * Resolve tool-approval-response messages into standard tool-result messages
+ * so that streamText receives clean history.
  *
- * Dedup: the client keeps sending the original tool-approval-response forever
- * (the stream does not return resolved history). Only the last message can be a
- * fresh approval; older approval-response messages get a synthetic tool-result.
+ * 1. Build a lookup of approvalId → tool metadata from assistant messages.
+ * 2. Determine which approval-responses are "fresh" (appended by the client
+ *    in this request) vs "stale" (processed in a prior request). Fresh ones
+ *    sit after the last assistant/user message; stale ones have the LLM's
+ *    continuation after them.
+ * 3. Fresh approvals are executed; stale ones get a synthetic result.
+ * 4. Strips tool-approval-request parts from assistant messages.
  */
-/* eslint-disable @typescript-eslint/no-explicit-any, no-plusplus, no-continue */
-/* eslint-disable no-loop-func, no-await-in-loop -- chat payloads are loosely typed */
+/* eslint-disable @typescript-eslint/no-explicit-any, no-await-in-loop */
 async function resolveApprovals(
   messages: any[],
   daTools: Record<string, any>,
 ): Promise<any[]> {
-  // Shallow-clone the array; deep-clone content arrays we may mutate
   const result: any[] = messages.map((m) => ({
     ...m,
     content: Array.isArray(m.content) ? [...m.content] : m.content,
   }));
 
-  for (let i = result.length - 1; i >= 0; i--) {
+  // 1. Build lookup: approvalId → { toolCallId, toolName, args, msgIdx }
+  const approvalMeta = new Map<string, {
+    toolCallId: string; toolName: string; args: any; msgIdx: number;
+  }>();
+  for (let i = 0; i < result.length; i += 1) {
     const msg = result[i];
-    if (msg.role !== 'tool' || !Array.isArray(msg.content)) continue;
-
-    const approvalResp = msg.content.find((p: any) => p.type === 'tool-approval-response');
-    if (!approvalResp) continue;
-
-    const { approvalId, approved } = approvalResp;
-    let toolCallId: string | undefined;
-    let toolName: string | undefined;
-    let toolArgs: any;
-
-    // Walk backwards to find the assistant message with the matching approval-request
-    for (let j = i - 1; j >= 0; j--) {
-      const prev = result[j];
-      if (prev.role !== 'assistant' || !Array.isArray(prev.content)) continue;
-
-      const req = prev.content.find(
-        (p: any) => p.type === 'tool-approval-request' && p.approvalId === approvalId,
-      );
-      if (!req) continue;
-
-      toolCallId = req.toolCallId;
-      const call = prev.content.find(
-        (p: any) => p.type === 'tool-call' && p.toolCallId === toolCallId,
-      );
-      if (call) {
-        toolName = call.toolName;
-        toolArgs = call.input;
+    if (msg.role === 'assistant' && Array.isArray(msg.content)) {
+      for (const part of msg.content) {
+        if (part.type === 'tool-approval-request') {
+          const call = msg.content.find(
+            (p: any) => p.type === 'tool-call' && p.toolCallId === part.toolCallId,
+          );
+          if (call) {
+            approvalMeta.set(part.approvalId, {
+              toolCallId: part.toolCallId,
+              toolName: call.toolName,
+              args: call.input,
+              msgIdx: i,
+            });
+          } else {
+            // approval-request with no matching tool-call — skip
+          }
+        }
       }
+    }
+  }
 
-      // Remove the approval-request part — streamText only needs the tool-call + tool-result
-      prev.content = prev.content.filter(
-        (p: any) => !(p.type === 'tool-approval-request' && p.approvalId === approvalId),
-      );
+  if (approvalMeta.size === 0) return result;
+
+  // 2. Find the last assistant/user message index.
+  //    Approval-responses AFTER this index are fresh (just appended by the client).
+  //    Approval-responses BEFORE it are stale (processed in a prior request,
+  //    with the LLM's continuation appearing after them).
+  let lastConversationIdx = -1;
+  for (let i = result.length - 1; i >= 0; i -= 1) {
+    if (result[i].role === 'assistant' || result[i].role === 'user') {
+      lastConversationIdx = i;
       break;
     }
+  }
+  // 3. Process each approval-response → replace with a tool-result
+  for (let i = 0; i < result.length; i += 1) {
+    const msg = result[i];
+    if (msg.role === 'tool' && Array.isArray(msg.content)) {
+      const resp = msg.content.find((p: any) => p.type === 'tool-approval-response');
+      if (resp) {
+        const meta = approvalMeta.get(resp.approvalId);
+        if (meta) {
+          const {
+            toolCallId, toolName, args, msgIdx,
+          } = meta;
 
-    if (!toolCallId || !toolName) continue;
+          // Strip the approval-request from the assistant message
+          result[msgIdx].content = result[msgIdx].content.filter(
+            (p: any) => !(p.type === 'tool-approval-request' && p.approvalId === resp.approvalId),
+          );
 
-    // A tool-approval-response that was already processed in a previous request
-    // will have subsequent messages after it (e.g. assistant text, new user turns).
-    // A NEW approval-response is always the last message (client appends it and sends).
-    const alreadyResolved = i < result.length - 1;
-    if (alreadyResolved) {
-      const staleOutput = approved
-        ? { type: 'text' as const, value: '(previously executed)' }
-        : { type: 'json' as const, value: { message: 'Action rejected by user.' } };
-      result[i] = {
-        role: 'tool',
-        content: [
-          {
-            type: 'tool-result',
-            toolCallId,
-            toolName,
-            output: staleOutput,
-          },
-        ],
-      };
-      continue;
-    }
+          // Stale: processed in a prior request (has assistant/user msgs after it)
+          if (i < lastConversationIdx) {
+            result[i] = {
+              role: 'tool',
+              content: [{
+                type: 'tool-result',
+                toolCallId,
+                toolName,
+                output: resp.approved
+                  ? { type: 'text' as const, value: '(previously executed)' }
+                  : { type: 'json' as const, value: { message: 'Action rejected by user.' } },
+              }],
+            };
+          } else {
+            // Fresh: execute the tool or create rejection result
+            let output: any;
+            if (resp.approved && daTools[toolName]?.execute) {
+              try {
+                output = await daTools[toolName].execute(args, { toolCallId, messages: [] });
+              } catch (e) {
+                output = { error: String(e) };
+              }
+            } else {
+              output = { message: 'Action rejected by user.' };
+            }
 
-    let output: any;
-    if (approved && daTools[toolName]?.execute) {
-      try {
-        output = await daTools[toolName].execute(toolArgs, { toolCallId, messages: [] });
-      } catch (e) {
-        output = { error: String(e) };
+            result[i] = {
+              role: 'tool',
+              content: [{
+                type: 'tool-result',
+                toolCallId,
+                toolName,
+                output: typeof output === 'string'
+                  ? { type: 'text', value: output }
+                  : { type: 'json', value: output },
+              }],
+            };
+          }
+        }
       }
-    } else {
-      output = { message: 'Action rejected by user.' };
     }
-
-    const wrappedOutput = typeof output === 'string'
-      ? { type: 'text', value: output }
-      : { type: 'json', value: output };
-
-    result[i] = {
-      role: 'tool',
-      content: [
-        {
-          type: 'tool-result',
-          toolCallId,
-          toolName,
-          output: wrappedOutput,
-        },
-      ],
-    };
   }
 
   return result;
 }
-/* eslint-enable @typescript-eslint/no-explicit-any, no-plusplus, no-continue */
-/* eslint-enable no-loop-func, no-await-in-loop */
+/* eslint-enable @typescript-eslint/no-explicit-any, no-await-in-loop */
 
 const SKILLS_PATH = '.da/skills';
 
