@@ -1,3 +1,10 @@
+## [1.4.2](https://github.com/adobe-rnd/da-agent/compare/v1.4.1...v1.4.2) (2026-03-25)
+
+
+### Bug Fixes
+
+* use correct external URLs ([52aa81c](https://github.com/adobe-rnd/da-agent/commit/52aa81cd4746e6d3442cffab3c0741710526b164))
+
 ## [1.4.1](https://github.com/adobe-rnd/da-agent/compare/v1.4.0...v1.4.1) (2026-03-25)
 
 
