@@ -1,3 +1,10 @@
+# [1.1.0](https://github.com/adobe-rnd/da-agent/compare/v1.0.2...v1.1.0) (2026-03-25)
+
+
+### Features
+
+* release ([a1e83ea](https://github.com/adobe-rnd/da-agent/commit/a1e83ea968f46681dbc45b27bbe83cc37da96661))
+
 ## [1.0.2](https://github.com/adobe-rnd/da-agent/compare/v1.0.1...v1.0.2) (2026-03-24)
 
 
