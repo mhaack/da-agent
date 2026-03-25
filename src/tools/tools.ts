@@ -1,6 +1,6 @@
 /**
- * DA Tools
- * Vercel AI SDK tool definitions wrapping DAAdminClient
+ * DA and EDS Tools
+ * Vercel AI SDK tool definitions wrapping DAAdminClient and EDSAdminClient.
  * When in edit view with a collab session, read/write the current doc via the shared Y doc.
  */
 
@@ -10,8 +10,10 @@ import type { DAAdminClient } from '../da-admin/client';
 import type { DAAPIError } from '../da-admin/types';
 import type { CollabClient } from '../collab-client';
 import { ensureHtmlExtension } from './utils';
+import type { EDSAdminClient } from '../eds-admin/client';
+import type { EDSOperationResult, EDSPublishResult, EDSToolError } from '../eds-admin/types';
 
-function isDAAPIError(e: unknown): e is DAAPIError {
+function isAPIError(e: unknown): e is DAAPIError {
   return typeof e === 'object' && e !== null && 'status' in e && 'message' in e;
 }
 
@@ -48,10 +50,15 @@ function useCollabForDoc(
   );
 }
 
-export function createDATools(client: DAAdminClient, options?: DAToolsOptions) {
+export function createDATools(client: DAAdminClient | null, options?: DAToolsOptions) {
   const opts = options;
-  return {
-    da_list_sources: tool({
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const tools: Record<string, any> = {};
+
+  // DA tools — only when the DA Admin client is available
+  if (client) {
+    tools.da_list_sources = tool({
       description:
         'List all sources and directories in a DA repository at a given path. Returns a list of files and folders with their metadata.',
       inputSchema: z.object({
@@ -68,13 +75,13 @@ export function createDATools(client: DAAdminClient, options?: DAToolsOptions) {
         try {
           return await client.listSources(org, repo, path);
         } catch (e) {
-          if (isDAAPIError(e)) return { error: e.message, status: e.status };
+          if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
         }
       },
-    }),
+    });
 
-    da_get_source: tool({
+    tools.da_get_source = tool({
       description:
         'Get the content of a specific source file from a DA repository. Returns the file content and metadata.',
       inputSchema: z.object({
@@ -100,13 +107,13 @@ export function createDATools(client: DAAdminClient, options?: DAToolsOptions) {
           }
           return await client.getSource(org, repo, ensureHtmlExtension(path));
         } catch (e) {
-          if (isDAAPIError(e)) return { error: e.message, status: e.status };
+          if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
         }
       },
-    }),
+    });
 
-    da_create_source: tool({
+    tools.da_create_source = tool({
       description:
         'Create a new source file in a DA repository with the specified content. '
         + 'Content MUST be a plain HTML string (no CDATA, no markdown fences) starting with <body> and ending with </body>, '
@@ -143,13 +150,13 @@ export function createDATools(client: DAAdminClient, options?: DAToolsOptions) {
             contentType,
           );
         } catch (e) {
-          if (isDAAPIError(e)) return { error: e.message, status: e.status };
+          if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
         }
       },
-    }),
+    });
 
-    da_update_source: tool({
+    tools.da_update_source = tool({
       description:
         'Update an existing source file in a DA repository with new content. '
         + 'Content MUST be a plain HTML string (no CDATA, no markdown fences) starting with <body> and ending with </body>, '
@@ -178,13 +185,13 @@ export function createDATools(client: DAAdminClient, options?: DAToolsOptions) {
           }
           return await client.updateSource(org, repo, pathWithExt, content, contentType);
         } catch (e) {
-          if (isDAAPIError(e)) return { error: e.message, status: e.status };
+          if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
         }
       },
-    }),
+    });
 
-    da_delete_source: tool({
+    tools.da_delete_source = tool({
       description:
         'Delete a source file from a DA repository. Use with caution as this operation cannot be undone.',
       inputSchema: z.object({
@@ -197,13 +204,13 @@ export function createDATools(client: DAAdminClient, options?: DAToolsOptions) {
         try {
           return await client.deleteSource(org, repo, ensureHtmlExtension(path));
         } catch (e) {
-          if (isDAAPIError(e)) return { error: e.message, status: e.status };
+          if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
         }
       },
-    }),
+    });
 
-    da_copy_content: tool({
+    tools.da_copy_content = tool({
       description:
         'Copy content from one location to another within a DA repository. Creates a duplicate of the source at the destination.',
       inputSchema: z.object({
@@ -225,13 +232,13 @@ export function createDATools(client: DAAdminClient, options?: DAToolsOptions) {
             ensureHtmlExtension(destinationPath),
           );
         } catch (e) {
-          if (isDAAPIError(e)) return { error: e.message, status: e.status };
+          if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
         }
       },
-    }),
+    });
 
-    da_move_content: tool({
+    tools.da_move_content = tool({
       description:
         'Move content from one location to another within a DA repository. The source file will be removed.',
       inputSchema: z.object({
@@ -254,13 +261,13 @@ export function createDATools(client: DAAdminClient, options?: DAToolsOptions) {
             ensureHtmlExtension(destinationPath),
           );
         } catch (e) {
-          if (isDAAPIError(e)) return { error: e.message, status: e.status };
+          if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
         }
       },
-    }),
+    });
 
-    da_create_version: tool({
+    tools.da_create_version = tool({
       description:
         'Create a version of a source document or sheet in a DA repository. Use this to snapshot the current state of a file before making changes.',
       inputSchema: z.object({
@@ -279,13 +286,13 @@ export function createDATools(client: DAAdminClient, options?: DAToolsOptions) {
         try {
           return await client.createVersion(org, repo, ensureHtmlExtension(path), label);
         } catch (e) {
-          if (isDAAPIError(e)) return { error: e.message, status: e.status };
+          if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
         }
       },
-    }),
+    });
 
-    da_get_versions: tool({
+    tools.da_get_versions = tool({
       description:
         'Get version history for a source file in a DA repository. Returns a list of versions with timestamps and metadata.',
       inputSchema: z.object({
@@ -297,13 +304,13 @@ export function createDATools(client: DAAdminClient, options?: DAToolsOptions) {
         try {
           return await client.getVersions(org, repo, ensureHtmlExtension(path));
         } catch (e) {
-          if (isDAAPIError(e)) return { error: e.message, status: e.status };
+          if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
         }
       },
-    }),
+    });
 
-    da_lookup_media: tool({
+    tools.da_lookup_media = tool({
       description:
         'Lookup media references in a DA repository. Returns information about media assets including URLs and metadata.',
       inputSchema: z.object({
@@ -315,13 +322,13 @@ export function createDATools(client: DAAdminClient, options?: DAToolsOptions) {
         try {
           return await client.lookupMedia(org, repo, mediaPath);
         } catch (e) {
-          if (isDAAPIError(e)) return { error: e.message, status: e.status };
+          if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
         }
       },
-    }),
+    });
 
-    da_lookup_fragment: tool({
+    tools.da_lookup_fragment = tool({
       description:
         'Lookup fragment references in a DA repository. Returns information about content fragments.',
       inputSchema: z.object({
@@ -333,13 +340,13 @@ export function createDATools(client: DAAdminClient, options?: DAToolsOptions) {
         try {
           return await client.lookupFragment(org, repo, fragmentPath);
         } catch (e) {
-          if (isDAAPIError(e)) return { error: e.message, status: e.status };
+          if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
         }
       },
-    }),
+    });
 
-    da_upload_media: tool({
+    tools.da_upload_media = tool({
       description:
         'Upload an image or media file to a DA repository using base64-encoded data. '
         + 'When uploading images referenced in a page (e.g. during page creation or update), '
@@ -378,10 +385,70 @@ export function createDATools(client: DAAdminClient, options?: DAToolsOptions) {
             fileName,
           );
         } catch (e) {
-          if (isDAAPIError(e)) return { error: e.message, status: e.status };
+          if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
         }
       },
+    });
+  }
+
+  return tools;
+}
+
+export function createEDSTools(client: EDSAdminClient) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const tools: Record<string, any> = {};
+
+  tools.eds_preview = tool({
+    description:
+      'Preview a page on the EDS (Edge Delivery Services) preview environment. '
+      + 'Triggers a preview build so changes become visible at the preview URL. '
+      + 'Use this after saving content changes to verify them before publishing.',
+    inputSchema: z.object({
+      org: z.string().describe('Organization name (owner)'),
+      repo: z.string().describe('Repository / site name'),
+      path: z.string().describe('Page path (e.g. "/docs/index" or "/docs/index.html" — .html will be stripped)'),
     }),
-  };
+    execute: async ({ org, repo, path }): Promise<EDSOperationResult | EDSToolError> => {
+      try {
+        return await client.preview(org, repo, path);
+      } catch (e) {
+        if (isAPIError(e)) return { error: e.message, status: e.status };
+        return { error: String(e) };
+      }
+    },
+  });
+
+  tools.eds_publish = tool({
+    description:
+      'Publish a page to the EDS (Edge Delivery Services) live environment. '
+      + 'First triggers a preview build, then promotes the page to live. '
+      + 'If preview fails, publishing is aborted. '
+      + 'Use this to make content publicly available.',
+    inputSchema: z.object({
+      org: z.string().describe('Organization name (owner)'),
+      repo: z.string().describe('Repository / site name'),
+      path: z.string().describe('Page path (e.g. "/docs/index" or "/docs/index.html" — .html will be stripped)'),
+    }),
+    execute: async ({ org, repo, path }): Promise<EDSPublishResult | EDSToolError> => {
+      let preview: EDSOperationResult;
+      try {
+        preview = await client.preview(org, repo, path);
+      } catch (e) {
+        if (isAPIError(e)) return { error: e.message, status: e.status };
+        return { error: String(e) };
+      }
+      try {
+        const live = await client.publishLive(org, repo, path);
+        return { preview, live };
+      } catch (e) {
+        // Preview succeeded but live failed; only the error is returned (preview result dropped).
+        // Future: return { preview, error, status } to let the model surface partial success.
+        if (isAPIError(e)) return { error: e.message, status: e.status };
+        return { error: String(e) };
+      }
+    },
+  });
+
+  return tools;
 }
