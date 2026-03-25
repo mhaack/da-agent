@@ -13,7 +13,7 @@ import { ensureHtmlExtension } from './utils';
 import type { EDSAdminClient } from '../eds-admin/client';
 import type { EDSOperationResult, EDSPublishResult, EDSToolError } from '../eds-admin/types';
 
-function isDAAPIError(e: unknown): e is DAAPIError {
+function isAPIError(e: unknown): e is DAAPIError {
   return typeof e === 'object' && e !== null && 'status' in e && 'message' in e;
 }
 
@@ -76,7 +76,7 @@ export function createDATools(client: DAAdminClient | null, options?: DAToolsOpt
         try {
           return await client.listSources(org, repo, path);
         } catch (e) {
-          if (isDAAPIError(e)) return { error: e.message, status: e.status };
+          if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
         }
       },
@@ -108,7 +108,7 @@ export function createDATools(client: DAAdminClient | null, options?: DAToolsOpt
           }
           return await client.getSource(org, repo, ensureHtmlExtension(path));
         } catch (e) {
-          if (isDAAPIError(e)) return { error: e.message, status: e.status };
+          if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
         }
       },
@@ -151,7 +151,7 @@ export function createDATools(client: DAAdminClient | null, options?: DAToolsOpt
             contentType,
           );
         } catch (e) {
-          if (isDAAPIError(e)) return { error: e.message, status: e.status };
+          if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
         }
       },
@@ -186,7 +186,7 @@ export function createDATools(client: DAAdminClient | null, options?: DAToolsOpt
           }
           return await client.updateSource(org, repo, pathWithExt, content, contentType);
         } catch (e) {
-          if (isDAAPIError(e)) return { error: e.message, status: e.status };
+          if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
         }
       },
@@ -205,7 +205,7 @@ export function createDATools(client: DAAdminClient | null, options?: DAToolsOpt
         try {
           return await client.deleteSource(org, repo, ensureHtmlExtension(path));
         } catch (e) {
-          if (isDAAPIError(e)) return { error: e.message, status: e.status };
+          if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
         }
       },
@@ -233,7 +233,7 @@ export function createDATools(client: DAAdminClient | null, options?: DAToolsOpt
             ensureHtmlExtension(destinationPath),
           );
         } catch (e) {
-          if (isDAAPIError(e)) return { error: e.message, status: e.status };
+          if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
         }
       },
@@ -262,7 +262,7 @@ export function createDATools(client: DAAdminClient | null, options?: DAToolsOpt
             ensureHtmlExtension(destinationPath),
           );
         } catch (e) {
-          if (isDAAPIError(e)) return { error: e.message, status: e.status };
+          if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
         }
       },
@@ -287,7 +287,7 @@ export function createDATools(client: DAAdminClient | null, options?: DAToolsOpt
         try {
           return await client.createVersion(org, repo, ensureHtmlExtension(path), label);
         } catch (e) {
-          if (isDAAPIError(e)) return { error: e.message, status: e.status };
+          if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
         }
       },
@@ -305,7 +305,7 @@ export function createDATools(client: DAAdminClient | null, options?: DAToolsOpt
         try {
           return await client.getVersions(org, repo, ensureHtmlExtension(path));
         } catch (e) {
-          if (isDAAPIError(e)) return { error: e.message, status: e.status };
+          if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
         }
       },
@@ -323,7 +323,7 @@ export function createDATools(client: DAAdminClient | null, options?: DAToolsOpt
         try {
           return await client.lookupMedia(org, repo, mediaPath);
         } catch (e) {
-          if (isDAAPIError(e)) return { error: e.message, status: e.status };
+          if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
         }
       },
@@ -341,7 +341,7 @@ export function createDATools(client: DAAdminClient | null, options?: DAToolsOpt
         try {
           return await client.lookupFragment(org, repo, fragmentPath);
         } catch (e) {
-          if (isDAAPIError(e)) return { error: e.message, status: e.status };
+          if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
         }
       },
@@ -386,7 +386,7 @@ export function createDATools(client: DAAdminClient | null, options?: DAToolsOpt
             fileName,
           );
         } catch (e) {
-          if (isDAAPIError(e)) return { error: e.message, status: e.status };
+          if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
         }
       },
@@ -410,7 +410,7 @@ export function createDATools(client: DAAdminClient | null, options?: DAToolsOpt
         try {
           return await edsClient.preview(org, repo, path);
         } catch (e) {
-          if (isDAAPIError(e)) return { error: e.message, status: e.status };
+          if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
         }
       },
@@ -432,14 +432,14 @@ export function createDATools(client: DAAdminClient | null, options?: DAToolsOpt
         try {
           preview = await edsClient.preview(org, repo, path);
         } catch (e) {
-          if (isDAAPIError(e)) return { error: e.message, status: e.status };
+          if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
         }
         try {
           const live = await edsClient.publishLive(org, repo, path);
           return { preview, live };
         } catch (e) {
-          if (isDAAPIError(e)) return { error: e.message, status: e.status };
+          if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
         }
       },
