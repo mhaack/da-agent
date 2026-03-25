@@ -332,6 +332,8 @@ export interface ScanOptions {
   siteOrigin?: string;
   branch?: string;
   githubToken?: string;
+  /** Custom path inside the repo to scan for MCP servers (default: 'mcp-servers') */
+  mcpPath?: string;
 }
 
 /**
@@ -347,12 +349,13 @@ export async function scanRepoMCPServers(
 ): Promise<DiscoveredMCP> {
   const branch = options.branch || 'main';
   const ghToken = options.githubToken;
+  const mcpDir = options.mcpPath || 'mcp-servers';
   const mcpServers: Record<string, MCPServerConfig> = {};
   const warnings: MCPDiscoveryWarning[] = [];
   const servers: MCPServerStatus[] = [];
 
-  // Strategy 1: mcp-servers/ subdirectories
-  const mcpItems = await listGitHubDir(owner, repo, 'mcp-servers', branch, ghToken);
+  // Strategy 1: configured mcp directory subdirectories
+  const mcpItems = await listGitHubDir(owner, repo, mcpDir, branch, ghToken);
   const mcpDirs = mcpItems.filter((item) => item.type === 'dir');
 
   if (mcpDirs.length > 0) {
@@ -377,7 +380,7 @@ export async function scanRepoMCPServers(
   return {
     readAt: new Date().toISOString(),
     mcpServers,
-    warnings: [{ serverId: '*', message: 'No MCP server folders found in mcp-servers/ or repo root' }],
+    warnings: [{ serverId: '*', message: `No MCP server folders found in ${mcpDir}/ or repo root` }],
     servers,
   };
 }

@@ -10,7 +10,7 @@ import type { DAAdminClient } from '../da-admin/client';
 import type { DAAPIError } from '../da-admin/types';
 import type { CollabClient } from '../collab-client';
 import { loadSkillContent, saveSkillContent } from '../skills/loader';
-import { listAgentPresets, loadAgentPreset, saveAgentPreset } from '../agents/loader';
+import { listAgentPresets, saveAgentPreset } from '../agents/loader';
 import type { AgentPreset } from '../agents/loader';
 import { ensureHtmlExtension } from './utils';
 import type { EDSAdminClient } from '../eds-admin/client';

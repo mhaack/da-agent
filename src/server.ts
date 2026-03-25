@@ -18,7 +18,7 @@ import type { SkillsIndex } from './skills/loader.js';
 import { loadAgentPreset } from './agents/loader.js';
 import type { AgentPreset } from './agents/loader.js';
 import { connectAndRegisterMCPTools } from './mcp/tool-adapter.js';
-import type { MCPClient } from './mcp/client.js';
+import { MCPClient } from './mcp/client.js';
 
 const CORS_HEADERS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
@@ -38,6 +38,7 @@ const ChatRequestSchema = z.object({
   pageContext: PageContextSchema.optional(),
   imsToken: z.string().optional(),
   agentId: z.string().optional(),
+  requestedSkills: z.array(z.string()).optional(),
 });
 
 type PageContext = z.infer<typeof PageContextSchema>;
@@ -61,6 +62,11 @@ export default {
     const mcpMatch = url.pathname.match(/^\/mcp-discovery\/([^/]+)\/([^/]+)$/);
     if (mcpMatch && request.method === 'GET') {
       return handleMcpDiscovery(request, env, mcpMatch[1], mcpMatch[2]);
+    }
+
+    const mcpToolsMatch = url.pathname.match(/^\/mcp-tools\/([^/]+)\/([^/]+)$/);
+    if (mcpToolsMatch && request.method === 'GET') {
+      return handleMcpToolsList(request, env, mcpToolsMatch[1], mcpToolsMatch[2]);
     }
 
     return new Response('Not found', { status: 404 });
@@ -233,17 +239,101 @@ function expandUserSelectionContextForModel(messages: any[]): any[] {
 }
 
 async function handleMcpDiscovery(
-  _request: Request,
+  request: Request,
   env: Env,
   org: string,
   site: string,
 ): Promise<Response> {
+  const url = new URL(request.url);
+  const mcpPath = url.searchParams.get('mcpPath') || undefined;
   const result = await scanRepoMCPServers(org, site, {
     branch: 'main',
     githubToken: env.GITHUB_TOKEN,
+    mcpPath,
   });
 
   return new Response(JSON.stringify(result), {
+    status: 200,
+    headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+  });
+}
+
+/**
+ * Connect to discovered MCP servers and list their individual tools.
+ * Returns { servers: [{ id, tools: [{ name, description }] }] }
+ */
+async function handleMcpToolsList(
+  request: Request,
+  env: Env,
+  org: string,
+  site: string,
+): Promise<Response> {
+  const url = new URL(request.url);
+  const mcpPath = url.searchParams.get('mcpPath') || undefined;
+
+  const discovery = await scanRepoMCPServers(org, site, {
+    branch: 'main',
+    githubToken: env.GITHUB_TOKEN,
+    mcpPath,
+  });
+
+  const serverTools: Array<{
+    id: string;
+    description?: string;
+    tools: Array<{ name: string; description: string }>;
+    error?: string;
+  }> = [];
+
+  const entries = Object.entries(discovery.mcpServers);
+  const clients: MCPClient[] = [];
+
+  await Promise.all(
+    entries.map(async ([serverId, config]) => {
+      const serverInfo = discovery.servers.find((s) => s.id === serverId);
+      const serverUrl = 'url' in config && typeof config.url === 'string'
+        ? config.url
+        : ('bridgeUrl' in config && typeof (config as any).bridgeUrl === 'string'
+          ? (config as any).bridgeUrl
+          : null);
+
+      if (!serverUrl) {
+        serverTools.push({
+          id: serverId,
+          description: serverInfo?.description,
+          tools: [],
+          error: 'No reachable URL (stdio without bridge)',
+        });
+        return;
+      }
+
+      const client = new MCPClient(serverUrl, { timeout: 10000 });
+      try {
+        await client.initialize();
+        clients.push(client);
+        const tools = await client.listTools();
+        serverTools.push({
+          id: serverId,
+          description: serverInfo?.description,
+          tools: tools.map((t) => ({
+            name: t.name,
+            description: t.description ?? `Tool from ${serverId}`,
+          })),
+        });
+      } catch (e) {
+        serverTools.push({
+          id: serverId,
+          description: serverInfo?.description,
+          tools: [],
+          error: `Connection failed: ${e instanceof Error ? e.message : String(e)}`,
+        });
+      }
+    }),
+  );
+
+  // Clean up connections
+  await Promise.allSettled(clients.map((c) => c.close()));
+
+  return new Response(JSON.stringify({ servers: serverTools }), {
     status: 200,
     headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
   });
@@ -265,7 +355,7 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   }
 
   const {
-    messages, pageContext, imsToken, agentId,
+    messages, pageContext, imsToken, agentId, requestedSkills,
   } = parsed.data;
 
   const bedrock = createAmazonBedrock({
@@ -338,6 +428,32 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
       }
     } catch {
       // Agent loading is best-effort
+    }
+  }
+
+  // Load explicitly requested skills (from slash commands)
+  if (requestedSkills && requestedSkills.length > 0) {
+    console.log('[da-agent] requestedSkills:', requestedSkills);
+    if (adminClient && pageContext) {
+      const entries = await Promise.all(
+        requestedSkills.map(async (sid) => {
+          if (agentSkillContents[sid]) return null;
+          try {
+            console.log(`[da-agent] loading skill "${sid}" for ${pageContext.org}/${pageContext.site}`);
+            const content = await loadSkillContent(adminClient, pageContext.org, pageContext.site, sid);
+            console.log(`[da-agent] skill "${sid}" loaded: ${content ? `${content.length} chars` : 'null'}`);
+            return content ? [sid, content] as const : null;
+          } catch (e) {
+            console.log(`[da-agent] skill "${sid}" error:`, e);
+            return null;
+          }
+        }),
+      );
+      const loaded = Object.fromEntries(entries.filter(Boolean) as [string, string][]);
+      agentSkillContents = { ...agentSkillContents, ...loaded };
+      console.log('[da-agent] agentSkillContents keys:', Object.keys(agentSkillContents));
+    } else {
+      console.log('[da-agent] cannot load skills: adminClient=', !!adminClient, 'pageContext=', !!pageContext);
     }
   }
 
@@ -432,8 +548,10 @@ function buildAgentPromptSection(
   agent?: AgentPreset | null,
   skillContents?: Record<string, string>,
 ): string {
-  if (!agent) return '';
-  let section = `\n\n## Active Agent: ${agent.name}\n${agent.description}\n\n### Agent Instructions\n${agent.systemPrompt}`;
+  let section = '';
+  if (agent) {
+    section += `\n\n## Active Agent: ${agent.name}\n${agent.description}\n\n### Agent Instructions\n${agent.systemPrompt}`;
+  }
   if (skillContents && Object.keys(skillContents).length > 0) {
     section += '\n\n### Pre-loaded Skills';
     for (const [id, content] of Object.entries(skillContents)) {
@@ -471,6 +589,53 @@ CRITICAL INSTRUCTION - TOOL USAGE:
 - Good: "Done! The page now contains..."
 - Bad: "Here is the updated HTML: \`\`\`html <body>...</body> \`\`\`"
 - Good: (call the update tool directly, then confirm in plain prose)
+
+## Rich Response Formatting
+When presenting structured information in your responses (NOT in HTML content for tools), use these block syntaxes for richer display. Wrap content in triple-colon fences:
+
+**Lists** — bullet lists with visual styling:
+\`\`\`
+:::list
+- First item
+- Second item
+- Third item
+:::
+\`\`\`
+
+**Checklists** — visual check/cross markers:
+\`\`\`
+:::checklist
+- [x] Completed item
+- [ ] Pending item
+:::
+\`\`\`
+
+**Alerts** — info, warning, or error callouts:
+\`\`\`
+:::alert-info
+This is an informational note.
+:::
+
+:::alert-warning
+This needs attention.
+:::
+
+:::alert-error
+This is a critical issue.
+:::
+\`\`\`
+
+**Toggle lists** — expandable sections:
+\`\`\`
+:::toggle-list
+> Section title
+  Details that expand when clicked.
+> Another section
+  More details here.
+:::
+\`\`\`
+
+Use these blocks when they improve readability — for example, checklists for audits, alerts for important notes, toggle lists for detailed breakdowns. Do NOT overuse them for simple responses.
 
 ## EDS HTML Content Rules
 ALL content you create or update via tools MUST be valid Edge Delivery Services (EDS) semantic HTML. Follow these rules strictly:
