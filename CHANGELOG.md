@@ -1,3 +1,10 @@
+# [1.6.0](https://github.com/adobe-rnd/da-agent/compare/v1.5.0...v1.6.0) (2026-03-25)
+
+
+### Features
+
+* support revert ([edf5b95](https://github.com/adobe-rnd/da-agent/commit/edf5b95e24aa51ed189deae529ce89909eecd2db))
+
 # [1.5.0](https://github.com/adobe-rnd/da-agent/compare/v1.4.2...v1.5.0) (2026-03-25)
 
 
