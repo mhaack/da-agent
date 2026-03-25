@@ -439,6 +439,8 @@ export function createDATools(client: DAAdminClient | null, options?: DAToolsOpt
           const live = await edsClient.publishLive(org, repo, path);
           return { preview, live };
         } catch (e) {
+          // Preview succeeded but live failed; only the error is returned (preview result dropped).
+          // Future: return { preview, error, status } to let the model surface partial success.
           if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
         }
