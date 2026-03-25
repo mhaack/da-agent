@@ -292,7 +292,6 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   const modelMessages = expandUserSelectionContextForModel(processedMessages);
 
   const result = streamText({
-    // model: bedrock('anthropic.claude-3-5-sonnet-20241022-v2:0'),
     model: bedrock('global.anthropic.claude-sonnet-4-6'),
     onError: (error) => {
       console.error('streamText error:', JSON.stringify(error));
