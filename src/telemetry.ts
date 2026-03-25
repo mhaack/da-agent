@@ -17,7 +17,7 @@ export function initTelemetry(env: Env): void {
   exporter = new LangfuseExporter({
     publicKey: env.LANGFUSE_PUBLIC_KEY,
     secretKey: env.LANGFUSE_SECRET_KEY,
-    baseUrl: env.LANGFUSE_BASEURL || 'https://cloud.langfuse.com',
+    baseUrl: env.LANGFUSE_BASEURL || 'https://mystique-langfuse-prod.corp.ethos117-prod-va6.ethos.adobe.net/',
   });
 
   const provider = new BasicTracerProvider({
