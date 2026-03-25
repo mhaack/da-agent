@@ -7,7 +7,7 @@ import {
 import { z } from 'zod';
 import { DAAdminClient } from './da-admin/client.js';
 import { EDSAdminClient } from './eds-admin/client.js';
-import { createDATools } from './tools/tools.js';
+import { createDATools, createEDSTools } from './tools/tools.js';
 import { ensureHtmlExtension } from './tools/utils.js';
 import { createCollabClient } from './collab-client.js';
 
@@ -277,8 +277,9 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   const daTools = createDATools(daClient, {
     pageContext: pageContext ?? undefined,
     collab: collab ?? undefined,
-    edsClient,
   });
+  const edsTools = edsClient ? createEDSTools(edsClient) : {};
+  const tools = { ...daTools, ...edsTools };
 
   const skills = daClient && pageContext
     ? await loadSkills(daClient, pageContext.org, pageContext.site)
@@ -287,7 +288,7 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   // Process any pending tool approvals before passing messages to streamText.
   // The AI SDK's needsApproval is designed for stateful sessions; since each request
   // creates a fresh streamText call, we resolve approvals here instead.
-  const processedMessages = await resolveApprovals(messages, daTools);
+  const processedMessages = await resolveApprovals(messages, tools);
   const modelMessages = expandUserSelectionContextForModel(processedMessages);
 
   const result = streamText({
@@ -302,7 +303,7 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
     },
     system: buildSystemPrompt(pageContext, skills),
     messages: modelMessages as ModelMessage[],
-    tools: daTools,
+    tools,
     stopWhen: stepCountIs(5),
   });
 

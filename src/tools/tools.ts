@@ -1,6 +1,6 @@
 /**
- * DA Tools
- * Vercel AI SDK tool definitions wrapping DAAdminClient
+ * DA and EDS Tools
+ * Vercel AI SDK tool definitions wrapping DAAdminClient and EDSAdminClient.
  * When in edit view with a collab session, read/write the current doc via the shared Y doc.
  */
 
@@ -27,7 +27,6 @@ export type PageContext = {
 export type DAToolsOptions = {
   pageContext?: PageContext;
   collab?: CollabClient | null;
-  edsClient?: EDSAdminClient | null;
 };
 
 function useCollabForDoc(
@@ -393,60 +392,63 @@ export function createDATools(client: DAAdminClient | null, options?: DAToolsOpt
     });
   }
 
-  // EDS tools — only when the EDS client is available
-  const edsClient = opts?.edsClient;
-  if (edsClient) {
-    tools.eds_preview = tool({
-      description:
-        'Preview a page on the EDS (Edge Delivery Services) preview environment. '
-        + 'Triggers a preview build so changes become visible at the preview URL. '
-        + 'Use this after saving content changes to verify them before publishing.',
-      inputSchema: z.object({
-        org: z.string().describe('Organization name (owner)'),
-        repo: z.string().describe('Repository / site name'),
-        path: z.string().describe('Page path (e.g. "/docs/index" or "/docs/index.html" — .html will be stripped)'),
-      }),
-      execute: async ({ org, repo, path }): Promise<EDSOperationResult | EDSToolError> => {
-        try {
-          return await edsClient.preview(org, repo, path);
-        } catch (e) {
-          if (isAPIError(e)) return { error: e.message, status: e.status };
-          return { error: String(e) };
-        }
-      },
-    });
+  return tools;
+}
 
-    tools.eds_publish = tool({
-      description:
-        'Publish a page to the EDS (Edge Delivery Services) live environment. '
-        + 'First triggers a preview build, then promotes the page to live. '
-        + 'If preview fails, publishing is aborted. '
-        + 'Use this to make content publicly available.',
-      inputSchema: z.object({
-        org: z.string().describe('Organization name (owner)'),
-        repo: z.string().describe('Repository / site name'),
-        path: z.string().describe('Page path (e.g. "/docs/index" or "/docs/index.html" — .html will be stripped)'),
-      }),
-      execute: async ({ org, repo, path }): Promise<EDSPublishResult | EDSToolError> => {
-        let preview: EDSOperationResult;
-        try {
-          preview = await edsClient.preview(org, repo, path);
-        } catch (e) {
-          if (isAPIError(e)) return { error: e.message, status: e.status };
-          return { error: String(e) };
-        }
-        try {
-          const live = await edsClient.publishLive(org, repo, path);
-          return { preview, live };
-        } catch (e) {
-          // Preview succeeded but live failed; only the error is returned (preview result dropped).
-          // Future: return { preview, error, status } to let the model surface partial success.
-          if (isAPIError(e)) return { error: e.message, status: e.status };
-          return { error: String(e) };
-        }
-      },
-    });
-  }
+export function createEDSTools(client: EDSAdminClient) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const tools: Record<string, any> = {};
+
+  tools.eds_preview = tool({
+    description:
+      'Preview a page on the EDS (Edge Delivery Services) preview environment. '
+      + 'Triggers a preview build so changes become visible at the preview URL. '
+      + 'Use this after saving content changes to verify them before publishing.',
+    inputSchema: z.object({
+      org: z.string().describe('Organization name (owner)'),
+      repo: z.string().describe('Repository / site name'),
+      path: z.string().describe('Page path (e.g. "/docs/index" or "/docs/index.html" — .html will be stripped)'),
+    }),
+    execute: async ({ org, repo, path }): Promise<EDSOperationResult | EDSToolError> => {
+      try {
+        return await client.preview(org, repo, path);
+      } catch (e) {
+        if (isAPIError(e)) return { error: e.message, status: e.status };
+        return { error: String(e) };
+      }
+    },
+  });
+
+  tools.eds_publish = tool({
+    description:
+      'Publish a page to the EDS (Edge Delivery Services) live environment. '
+      + 'First triggers a preview build, then promotes the page to live. '
+      + 'If preview fails, publishing is aborted. '
+      + 'Use this to make content publicly available.',
+    inputSchema: z.object({
+      org: z.string().describe('Organization name (owner)'),
+      repo: z.string().describe('Repository / site name'),
+      path: z.string().describe('Page path (e.g. "/docs/index" or "/docs/index.html" — .html will be stripped)'),
+    }),
+    execute: async ({ org, repo, path }): Promise<EDSPublishResult | EDSToolError> => {
+      let preview: EDSOperationResult;
+      try {
+        preview = await client.preview(org, repo, path);
+      } catch (e) {
+        if (isAPIError(e)) return { error: e.message, status: e.status };
+        return { error: String(e) };
+      }
+      try {
+        const live = await client.publishLive(org, repo, path);
+        return { preview, live };
+      } catch (e) {
+        // Preview succeeded but live failed; only the error is returned (preview result dropped).
+        // Future: return { preview, error, status } to let the model surface partial success.
+        if (isAPIError(e)) return { error: e.message, status: e.status };
+        return { error: String(e) };
+      }
+    },
+  });
 
   return tools;
 }

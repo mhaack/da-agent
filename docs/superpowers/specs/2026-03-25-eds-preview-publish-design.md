@@ -11,7 +11,7 @@ Extend the da-agent with two AI tools that allow the agent to trigger EDS (Edge 
 
 - `eds_preview` — triggers a preview of a page (calls `/preview` endpoint only)
 - `eds_publish` — triggers a full publish of a page (calls `/preview` then `/live` in sequence; aborts if preview returns non-2xx)
-- Both tools require user approval before execution (`needsApproval: async () => true`)
+- Both tools do **not** require user approval — no `needsApproval` on either tool
 - Authentication uses the IMS token already present in the request
 - The `ref` is always `main`
 
@@ -183,7 +183,7 @@ eds_preview: tool({
     repo: z.string().describe('Repository / site name'),
     path: z.string().describe('Page path (e.g. "/docs/index" or "/docs/index.html" — .html will be stripped)'),
   }),
-  needsApproval: async () => true,
+
   execute: async ({ org, repo, path }) => {
     try {
       return await edsClient.preview(org, repo, path);
@@ -209,7 +209,7 @@ eds_publish: tool({
     repo: z.string().describe('Repository / site name'),
     path: z.string().describe('Page path (e.g. "/docs/index" or "/docs/index.html" — .html will be stripped)'),
   }),
-  needsApproval: async () => true,
+
   execute: async ({ org, repo, path }) => {
     let preview: EDSOperationResult;
     try {

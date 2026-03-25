@@ -2,7 +2,7 @@ import {
   describe, it, expect, vi,
 } from 'vitest';
 import { EDSAdminClient } from '../src/eds-admin/client';
-import { createDATools } from '../src/tools/tools';
+import { createDATools, createEDSTools } from '../src/tools/tools';
 
 // Minimal mock for EDSAdminClient
 function makeEdsClient(overrides: Partial<EDSAdminClient> = {}): EDSAdminClient {
@@ -15,18 +15,13 @@ function makeEdsClient(overrides: Partial<EDSAdminClient> = {}): EDSAdminClient 
 
 describe('eds_preview tool', () => {
   it('is registered when edsClient is provided', () => {
-    const tools = createDATools(null, { edsClient: makeEdsClient() });
+    const tools = createEDSTools(makeEdsClient());
     expect(tools).toHaveProperty('eds_preview');
-  });
-
-  it('is NOT registered when edsClient is absent', () => {
-    const tools = createDATools(null, {});
-    expect(tools).not.toHaveProperty('eds_preview');
   });
 
   it('calls edsClient.preview() with org, repo, path and returns result', async () => {
     const edsClient = makeEdsClient();
-    const tools = createDATools(null, { edsClient });
+    const tools = createEDSTools(edsClient);
 
     const result = await tools.eds_preview.execute({ org: 'myorg', repo: 'myrepo', path: '/docs/index' }, {} as any);
 
@@ -38,7 +33,7 @@ describe('eds_preview tool', () => {
     const edsClient = makeEdsClient({
       preview: vi.fn().mockRejectedValue({ status: 404, message: 'Not Found' }),
     });
-    const tools = createDATools(null, { edsClient });
+    const tools = createEDSTools(edsClient);
 
     const result = await tools.eds_preview.execute({ org: 'o', repo: 'r', path: '/p' }, {} as any);
     expect(result).toMatchObject({ error: 'Not Found', status: 404 });
@@ -47,13 +42,13 @@ describe('eds_preview tool', () => {
 
 describe('eds_publish tool', () => {
   it('is registered when edsClient is provided', () => {
-    const tools = createDATools(null, { edsClient: makeEdsClient() });
+    const tools = createEDSTools(makeEdsClient());
     expect(tools).toHaveProperty('eds_publish');
   });
 
   it('calls preview then publishLive and returns both results', async () => {
     const edsClient = makeEdsClient();
-    const tools = createDATools(null, { edsClient });
+    const tools = createEDSTools(edsClient);
 
     const result = await tools.eds_publish.execute({ org: 'o', repo: 'r', path: '/docs/index' }, {} as any);
 
@@ -69,7 +64,7 @@ describe('eds_publish tool', () => {
     const edsClient = makeEdsClient({
       preview: vi.fn().mockRejectedValue({ status: 500, message: 'Preview failed' }),
     });
-    const tools = createDATools(null, { edsClient });
+    const tools = createEDSTools(edsClient);
 
     const result = await tools.eds_publish.execute({ org: 'o', repo: 'r', path: '/p' }, {} as any);
 
@@ -81,7 +76,7 @@ describe('eds_publish tool', () => {
     const edsClient = makeEdsClient({
       publishLive: vi.fn().mockRejectedValue({ status: 502, message: 'Live failed' }),
     });
-    const tools = createDATools(null, { edsClient });
+    const tools = createEDSTools(edsClient);
 
     const result = await tools.eds_publish.execute({ org: 'o', repo: 'r', path: '/p' }, {} as any);
 
