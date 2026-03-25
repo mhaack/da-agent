@@ -28,7 +28,11 @@ export interface MCPDiscoveryWarning {
 export interface MCPServerStatus {
   id: string;
   sourcePath: string;
-  status: 'ok' | 'error';
+  status: 'ok' | 'reachable' | 'unreachable' | 'error';
+  transport?: 'stdio' | 'http' | 'sse';
+  endpoint?: string;
+  description?: string;
+  statusDetail?: string;
 }
 
 /**

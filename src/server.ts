@@ -11,7 +11,7 @@ import { createCanvasClientTools, createDATools, createEDSTools } from './tools/
 import { ensureHtmlExtension } from './tools/utils.js';
 import { createCollabClient } from './collab-client.js';
 import { initTelemetry, flushTelemetry } from './telemetry.js';
-import { readDiscoveryCache, loadEffectiveMCPConfig } from './mcp/discovery.js';
+import { scanRepoMCPServers, readDiscoveryCache, loadEffectiveMCPConfig } from './mcp/discovery.js';
 import type { MCPServerConfig } from './mcp/types.js';
 import { loadSkillsIndex, loadSkillContent } from './skills/loader.js';
 import type { SkillsIndex } from './skills/loader.js';
@@ -22,7 +22,7 @@ import type { MCPClient } from './mcp/client.js';
 
 const CORS_HEADERS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
 
@@ -56,6 +56,11 @@ export default {
       if (request.method === 'POST') {
         return handleChat(request, env);
       }
+    }
+
+    const mcpMatch = url.pathname.match(/^\/mcp-discovery\/([^/]+)\/([^/]+)$/);
+    if (mcpMatch && request.method === 'GET') {
+      return handleMcpDiscovery(request, env, mcpMatch[1], mcpMatch[2]);
     }
 
     return new Response('Not found', { status: 404 });
@@ -188,37 +193,6 @@ async function resolveApprovals(
 }
 /* eslint-enable @typescript-eslint/no-explicit-any, no-await-in-loop */
 
-const SKILLS_PATH = '.da/skills';
-
-async function loadSkills(client: DAAdminClient, org: string, site: string): Promise<string[]> {
-  try {
-    const listing = await client.listSources(org, site, SKILLS_PATH);
-    const mdFiles = listing.filter((s) => s.ext === 'md');
-    console.log(`Skills: found ${mdFiles.length} skill(s) in ${org}/${site}/${SKILLS_PATH}:`, mdFiles.map((f) => f.name));
-    // Paths from list API are absolute (/{org}/{site}/...) — strip prefix for getSource
-    const pathPrefix = `/${org}/${site}/`;
-    const results = await Promise.all(
-      mdFiles.map((f) => {
-        const relativePath = f.path.startsWith(pathPrefix)
-          ? f.path.slice(pathPrefix.length)
-          : f.path;
-        return client.getSource(org, site, relativePath)
-          .then((r) => r as unknown as string)
-          .catch((e) => {
-            console.log(`Skills: failed to load ${f.name}:`, e);
-            return null;
-          });
-      }),
-    );
-    const loaded = results.filter(Boolean) as string[];
-    console.log(`Skills: successfully loaded ${loaded.length}/${mdFiles.length} skill(s)`);
-    return loaded;
-  } catch {
-    console.log(`Skills: no skills folder found at ${org}/${site}/${SKILLS_PATH}`);
-    return [];
-  }
-}
-
 /**
  * Turn per-message selectionContext (page excerpts from quick-edit) into text the model can use.
  * Strips selectionContext from the payload so streamText receives plain CoreMessages.
@@ -255,6 +229,23 @@ function expandUserSelectionContextForModel(messages: any[]): any[] {
     const prefix = formatSelectionContextForModel(items);
     const content = `${prefix}\n\n---\n\nUser message:\n${userText}`;
     return { role: 'user', content };
+  });
+}
+
+async function handleMcpDiscovery(
+  _request: Request,
+  env: Env,
+  org: string,
+  site: string,
+): Promise<Response> {
+  const result = await scanRepoMCPServers(org, site, {
+    branch: 'main',
+    githubToken: env.GITHUB_TOKEN,
+  });
+
+  return new Response(JSON.stringify(result), {
+    status: 200,
+    headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
   });
 }
 
