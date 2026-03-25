@@ -84,14 +84,20 @@ describe('EDSAdminClient', () => {
     });
 
     it('throws { status: 408 } on timeout', async () => {
-      mockFetch.mockImplementationOnce(() => new Promise((_, reject) => {
-        const err = new Error('The operation was aborted');
-        err.name = 'AbortError';
-        setTimeout(() => reject(err), 10);
-      }));
+      const abortableFetch = (_url: string, init: RequestInit) => new Promise((_, reject) => {
+        // React to the AbortController signal — this is how real fetch behaves
+        init.signal?.addEventListener('abort', () => {
+          const err = new Error('The operation was aborted');
+          err.name = 'AbortError';
+          reject(err);
+        });
+      });
+      mockFetch.mockImplementationOnce(abortableFetch);
 
       const fastClient = new EDSAdminClient({ apiToken: 'test-token', timeout: 1 });
-      await expect(fastClient.preview('org', 'repo', '/docs/index')).rejects.toMatchObject({
+      await expect(
+        fastClient.preview('org', 'repo', '/docs/index'),
+      ).rejects.toMatchObject({
         status: 408,
         message: 'Request timeout',
       });
