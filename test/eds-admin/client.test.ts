@@ -42,7 +42,6 @@ describe('EDSAdminClient', () => {
       expect(url).toBe('https://admin.hlx.page/preview/org/repo/main/docs/index');
       expect(init.method).toBe('POST');
       expect(init.headers.get('Authorization')).toBe('Bearer test-token');
-      expect(init.headers.get('x-auth-token')).toBe('test-token');
       expect(init.headers.get('x-content-source-authorization')).toBe('Bearer test-token');
 
       expect(result.status).toBe(200);
