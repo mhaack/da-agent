@@ -1,3 +1,17 @@
+# [1.4.0](https://github.com/adobe-rnd/da-agent/compare/v1.3.0...v1.4.0) (2026-03-25)
+
+
+### Bug Fixes
+
+* revert Langfuse placeholder to empty string ([3175df3](https://github.com/adobe-rnd/da-agent/commit/3175df342b98f2c4054caf986b8bbead497fcd3e))
+
+
+### Features
+
+* add Langfuse telemetry module with lazy OTEL init ([358653f](https://github.com/adobe-rnd/da-agent/commit/358653f178580fd554bfbdf04e335240418cac60))
+* add path to telemetry metadata ([2aa1f37](https://github.com/adobe-rnd/da-agent/commit/2aa1f3759622daf02fa979ae2cebe3ca5f550b21))
+* wire Langfuse telemetry into streamText ([a24ad2a](https://github.com/adobe-rnd/da-agent/commit/a24ad2ab30767244612db835f2d8174f54d4cf64))
+
 # [1.3.0](https://github.com/adobe-rnd/da-agent/compare/v1.2.2...v1.3.0) (2026-03-25)
 
 
