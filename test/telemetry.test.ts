@@ -54,7 +54,7 @@ describe('telemetry', () => {
     expect(mockLangfuseExporter).toHaveBeenCalledWith({
       publicKey: 'pk-test',
       secretKey: 'sk-test',
-      baseUrl: 'https://cloud.langfuse.com',
+      baseUrl: 'https://mystique-langfuse-prod.corp.ethos117-prod-va6.ethos.adobe.net/',
     });
     expect(mockBasicTracerProvider).toHaveBeenCalledWith(
       expect.objectContaining({
