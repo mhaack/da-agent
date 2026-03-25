@@ -27,17 +27,19 @@ export class EDSAdminClient {
     return stripped.startsWith('/') ? stripped.slice(1) : stripped;
   }
 
-  private authHeaders(): Headers {
+  private authHeaders(includeContentSource = true): Headers {
     const headers = new Headers();
     headers.set('Authorization', `Bearer ${this.apiToken}`);
-    headers.set('x-content-source-authorization', `Bearer ${this.apiToken}`);
+    if (includeContentSource) {
+      headers.set('x-content-source-authorization', `Bearer ${this.apiToken}`);
+    }
     return headers;
   }
 
-  private async post(endpoint: string): Promise<Response> {
+  private async request(method: 'POST' | 'DELETE', endpoint: string, includeContentSource = true): Promise<Response> {
     const url = `https://admin.hlx.page${endpoint}`;
-    const headers = this.authHeaders();
-    console.log(`EDS Admin API Call: POST ${url}`);
+    const headers = this.authHeaders(includeContentSource);
+    console.log(`EDS Admin API Call: ${method} ${url}`);
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.timeout);
@@ -45,7 +47,7 @@ export class EDSAdminClient {
 
     try {
       const response = await fetch(url, {
-        method: 'POST',
+        method,
         headers,
         signal: controller.signal,
       });
@@ -101,7 +103,17 @@ export class EDSAdminClient {
    */
   async preview(owner: string, repo: string, path: string): Promise<EDSOperationResult> {
     const normPath = this.normalisePath(path);
-    const response = await this.post(`/preview/${owner}/${repo}/main/${normPath}`);
+    const response = await this.request('POST', `/preview/${owner}/${repo}/main/${normPath}`);
+    return this.parseResponse(response, 'preview');
+  }
+
+  /**
+   * Remove the given page from the preview environment.
+   * DELETE https://admin.hlx.page/preview/{owner}/{repo}/main/{path}
+   */
+  async unpreview(owner: string, repo: string, path: string): Promise<EDSOperationResult> {
+    const normPath = this.normalisePath(path);
+    const response = await this.request('DELETE', `/preview/${owner}/${repo}/main/${normPath}`, false);
     return this.parseResponse(response, 'preview');
   }
 
@@ -111,7 +123,17 @@ export class EDSAdminClient {
    */
   async publishLive(owner: string, repo: string, path: string): Promise<EDSOperationResult> {
     const normPath = this.normalisePath(path);
-    const response = await this.post(`/live/${owner}/${repo}/main/${normPath}`);
+    const response = await this.request('POST', `/live/${owner}/${repo}/main/${normPath}`, false);
+    return this.parseResponse(response, 'live');
+  }
+
+  /**
+   * Unpublish the given page from the live environment.
+   * DELETE https://admin.hlx.page/live/{owner}/{repo}/main/{path}
+   */
+  async unpublishLive(owner: string, repo: string, path: string): Promise<EDSOperationResult> {
+    const normPath = this.normalisePath(path);
+    const response = await this.request('DELETE', `/live/${owner}/${repo}/main/${normPath}`, false);
     return this.parseResponse(response, 'live');
   }
 }
