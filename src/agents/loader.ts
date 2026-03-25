@@ -79,11 +79,12 @@ export async function listAgentPresets(
       const id = item.name.replace(/\.json$/, '');
       try {
         const target = source === 'org' ? '.da' : site;
-        const subPath = source === 'org'
-          ? `agents/${item.name}${item.ext && !item.name.endsWith('.json') ? `.${item.ext}` : ''}`
-          : `${AGENTS_PATH}/${item.name}${item.ext && !item.name.endsWith('.json') ? `.${item.ext}` : ''}`;
+        const subPath =
+          source === 'org'
+            ? `agents/${item.name}${item.ext && !item.name.endsWith('.json') ? `.${item.ext}` : ''}`
+            : `${AGENTS_PATH}/${item.name}${item.ext && !item.name.endsWith('.json') ? `.${item.ext}` : ''}`;
         const content = await client.getSource(org, target, subPath);
-        const raw = typeof content === 'string' ? content : (content as any)?.content ?? '';
+        const raw = typeof content === 'string' ? content : ((content as any)?.content ?? '');
         const preset = parsePreset(raw);
         return {
           id,
@@ -111,7 +112,7 @@ export async function loadAgentPreset(
   // Site-level
   try {
     const content = await client.getSource(org, site, `${AGENTS_PATH}/${filename}`);
-    const raw = typeof content === 'string' ? content : (content as any)?.content ?? '';
+    const raw = typeof content === 'string' ? content : ((content as any)?.content ?? '');
     if (raw) return parsePreset(raw);
   } catch {
     // fall through
@@ -120,7 +121,7 @@ export async function loadAgentPreset(
   // Org-level
   try {
     const content = await client.getSource(org, '.da', `agents/${filename}`);
-    const raw = typeof content === 'string' ? content : (content as any)?.content ?? '';
+    const raw = typeof content === 'string' ? content : ((content as any)?.content ?? '');
     if (raw) return parsePreset(raw);
   } catch {
     // not found

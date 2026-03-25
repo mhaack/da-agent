@@ -1,9 +1,5 @@
 import { createAmazonBedrock } from '@ai-sdk/amazon-bedrock';
-import {
-  streamText,
-  stepCountIs,
-  type ModelMessage,
-} from 'ai';
+import { streamText, stepCountIs, type ModelMessage } from 'ai';
 import { z } from 'zod';
 import { DAAdminClient } from './da-admin/client.js';
 import { EDSAdminClient } from './eds-admin/client.js';
@@ -11,7 +7,12 @@ import { createCanvasClientTools, createDATools, createEDSTools } from './tools/
 import { ensureHtmlExtension } from './tools/utils.js';
 import { createCollabClient } from './collab-client.js';
 import { initTelemetry, flushTelemetry } from './telemetry.js';
-import { scanRepoMCPServers, readDiscoveryCache, loadEffectiveMCPConfig, mergeConfigServers } from './mcp/discovery.js';
+import {
+  scanRepoMCPServers,
+  readDiscoveryCache,
+  loadEffectiveMCPConfig,
+  mergeConfigServers,
+} from './mcp/discovery.js';
 import type { MCPServerConfig } from './mcp/types.js';
 import { loadSkillsIndex, loadSkillContent } from './skills/loader.js';
 import type { SkillsIndex } from './skills/loader.js';
@@ -243,7 +244,9 @@ async function parseConfigServers(raw: string | null): Promise<Record<string, un
   try {
     const parsed = JSON.parse(decodeURIComponent(raw));
     if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) return parsed;
-  } catch { /* invalid JSON — ignore */ }
+  } catch {
+    /* invalid JSON — ignore */
+  }
   return {};
 }
 
@@ -309,11 +312,15 @@ async function handleMcpToolsList(
   await Promise.all(
     entries.map(async ([serverId, config]) => {
       const serverInfo = discovery.servers.find((s) => s.id === serverId);
-      const serverUrl = 'url' in config && typeof config.url === 'string'
-        ? config.url
-        : ('bridgeUrl' in config && typeof (config as any).bridgeUrl === 'string'
-          ? (config as any).bridgeUrl
-          : null);
+      let serverUrl: string | null = null;
+      if ('url' in config && typeof config.url === 'string') {
+        serverUrl = config.url;
+      } else if (
+        'bridgeUrl' in config &&
+        typeof (config as Record<string, unknown>).bridgeUrl === 'string'
+      ) {
+        serverUrl = (config as Record<string, unknown>).bridgeUrl as string;
+      }
 
       if (!serverUrl) {
         serverTools.push({
@@ -373,9 +380,7 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
     return new Response('Invalid request body', { status: 400 });
   }
 
-  const {
-    messages, pageContext, imsToken, agentId, requestedSkills,
-  } = parsed.data;
+  const { messages, pageContext, imsToken, agentId, requestedSkills } = parsed.data;
 
   const bedrock = createAmazonBedrock({
     region: env.AWS_REGION,
@@ -385,17 +390,17 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   const daOrigin = env.DA_ORIGIN ?? 'https://admin.da.live';
   const sourceUrl = `${daOrigin}/source/${pageContext?.org}/${pageContext?.site}/${ensureHtmlExtension(pageContext?.path ?? '')}`;
 
-  const collab = pageContext?.view === 'edit' && imsToken && env.DACOLLAB
-    ? await createCollabClient(sourceUrl, imsToken, pageContext.org, env.DACOLLAB)
-    : null;
+  const collab =
+    pageContext?.view === 'edit' && imsToken && env.DACOLLAB
+      ? await createCollabClient(sourceUrl, imsToken, pageContext.org, env.DACOLLAB)
+      : null;
 
-  const adminClient = imsToken && env.DAADMIN
-    ? new DAAdminClient({ apiToken: imsToken, daadminService: env.DAADMIN })
-    : null;
+  const adminClient =
+    imsToken && env.DAADMIN
+      ? new DAAdminClient({ apiToken: imsToken, daadminService: env.DAADMIN })
+      : null;
 
-  const edsClient = imsToken
-    ? new EDSAdminClient({ apiToken: imsToken })
-    : null;
+  const edsClient = imsToken ? new EDSAdminClient({ apiToken: imsToken }) : null;
 
   const daTools = createDATools(adminClient, {
     pageContext: pageContext ?? undefined,
@@ -407,7 +412,10 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   const canvasClientTools = createCanvasClientTools();
 
   // Load repo-scoped MCP discovery overlay and merge with system config.
-  let mcpConfig: { mcpServers: Record<string, MCPServerConfig>; toolAllowPatterns: string[] } | null = null;
+  let mcpConfig: {
+    mcpServers: Record<string, MCPServerConfig>;
+    toolAllowPatterns: string[];
+  } | null = null;
   if (adminClient && pageContext) {
     try {
       const repoOverlay = await readDiscoveryCache(adminClient, pageContext.org, pageContext.site);
@@ -438,9 +446,16 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
         const entries = await Promise.all(
           activeAgent.skills.map(async (sid) => {
             try {
-              const content = await loadSkillContent(adminClient, pageContext.org, pageContext.site, sid);
-              return content ? [sid, content] as const : null;
-            } catch { return null; }
+              const content = await loadSkillContent(
+                adminClient,
+                pageContext.org,
+                pageContext.site,
+                sid,
+              );
+              return content ? ([sid, content] as const) : null;
+            } catch {
+              return null;
+            }
           }),
         );
         agentSkillContents = Object.fromEntries(entries.filter(Boolean) as [string, string][]);
@@ -458,10 +473,19 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
         requestedSkills.map(async (sid) => {
           if (agentSkillContents[sid]) return null;
           try {
-            console.log(`[da-agent] loading skill "${sid}" for ${pageContext.org}/${pageContext.site}`);
-            const content = await loadSkillContent(adminClient, pageContext.org, pageContext.site, sid);
-            console.log(`[da-agent] skill "${sid}" loaded: ${content ? `${content.length} chars` : 'null'}`);
-            return content ? [sid, content] as const : null;
+            console.log(
+              `[da-agent] loading skill "${sid}" for ${pageContext.org}/${pageContext.site}`,
+            );
+            const content = await loadSkillContent(
+              adminClient,
+              pageContext.org,
+              pageContext.site,
+              sid,
+            );
+            console.log(
+              `[da-agent] skill "${sid}" loaded: ${content ? `${content.length} chars` : 'null'}`,
+            );
+            return content ? ([sid, content] as const) : null;
           } catch (e) {
             console.log(`[da-agent] skill "${sid}" error:`, e);
             return null;
@@ -472,7 +496,12 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
       agentSkillContents = { ...agentSkillContents, ...loaded };
       console.log('[da-agent] agentSkillContents keys:', Object.keys(agentSkillContents));
     } else {
-      console.log('[da-agent] cannot load skills: adminClient=', !!adminClient, 'pageContext=', !!pageContext);
+      console.log(
+        '[da-agent] cannot load skills: adminClient=',
+        !!adminClient,
+        'pageContext=',
+        !!pageContext,
+      );
     }
   }
 
@@ -498,7 +527,13 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   const modelMessages = expandUserSelectionContextForModel(processedMessages);
 
   const cleanupMCP = () => {
-    mcpClients.forEach((c) => { try { c.close(); } catch { /* ignore */ } });
+    mcpClients.forEach((c) => {
+      try {
+        c.close();
+      } catch {
+        /* ignore */
+      }
+    });
   };
 
   const result = streamText({
@@ -553,9 +588,7 @@ function buildMCPPromptSection(
 
 function buildSkillsPromptSection(skillsIndex?: SkillsIndex | null): string {
   if (!skillsIndex || skillsIndex.skills.length === 0) return '';
-  const lines = skillsIndex.skills
-    .map((s) => `- **${s.id}**: ${s.title}`)
-    .join('\n');
+  const lines = skillsIndex.skills.map((s) => `- **${s.id}**: ${s.title}`).join('\n');
   return `\n\n## Available Skills
 The following skills are available for this ${skillsIndex.source === 'org' ? 'organization' : 'site'}. Use the da_get_skill tool to read a skill's full instructions before applying it.
 ${lines}
@@ -576,7 +609,7 @@ function buildAgentPromptSection(
     for (const [id, content] of Object.entries(skillContents)) {
       section += `\n\n#### Skill: ${id}\n${content}`;
     }
-    section += '\n\nApply the above skill instructions whenever relevant to the user\'s request.';
+    section += "\n\nApply the above skill instructions whenever relevant to the user's request.";
   }
   return section;
 }

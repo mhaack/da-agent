@@ -26,17 +26,14 @@ function getServerUrl(cfg: MCPServerConfig): string | null {
  * Convert a single MCP tool definition into an AI SDK tool.
  * The tool name is prefixed with the serverId: mcp__<serverId>__<toolName>.
  */
-function mcpToolToAITool(
-  serverId: string,
-  mcpTool: MCPToolDefinition,
-  mcpClient: MCPClient,
-) {
+function mcpToolToAITool(serverId: string, mcpTool: MCPToolDefinition, mcpClient: MCPClient) {
   const toolName = `mcp__${serverId}__${mcpTool.name}`;
   const description = mcpTool.description ?? `MCP tool ${mcpTool.name} from server ${serverId}`;
 
-  const schema = mcpTool.inputSchema && Object.keys(mcpTool.inputSchema).length > 0
-    ? jsonSchema(mcpTool.inputSchema as any)
-    : jsonSchema({ type: 'object', properties: {} });
+  const schema =
+    mcpTool.inputSchema && Object.keys(mcpTool.inputSchema).length > 0
+      ? jsonSchema(mcpTool.inputSchema as any)
+      : jsonSchema({ type: 'object', properties: {} });
 
   return {
     name: toolName,
@@ -47,9 +44,7 @@ function mcpToolToAITool(
         try {
           const result = await mcpClient.callTool(mcpTool.name, args);
           if (result.isError) {
-            const errorText = result.content
-              .map((c) => c.text ?? JSON.stringify(c))
-              .join('\n');
+            const errorText = result.content.map((c) => c.text ?? JSON.stringify(c)).join('\n');
             return { error: errorText };
           }
           const textParts = result.content.filter((c) => c.type === 'text');
@@ -112,7 +107,11 @@ export async function connectAndRegisterMCPTools(
         console.log(`MCP server ${serverId}: connected, ${mcpTools.length} tool(s) registered`);
       } catch (e) {
         console.log(`MCP server ${serverId}: connection failed: ${e}`);
-        try { await client.close(); } catch { /* cleanup */ }
+        try {
+          await client.close();
+        } catch {
+          /* cleanup */
+        }
       }
     }),
   );

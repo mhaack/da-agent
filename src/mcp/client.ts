@@ -117,7 +117,7 @@ export class MCPClient {
         return this.parseSSEResponse(response);
       }
 
-      return await response.json() as JsonRpcResponse;
+      return (await response.json()) as JsonRpcResponse;
     } catch (e) {
       clearTimeout(timeoutId);
       if (e instanceof Error && e.name === 'AbortError') {

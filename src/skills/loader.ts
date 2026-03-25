@@ -23,10 +23,11 @@ function extractTitle(markdown: string): string {
   const lines = markdown.split('\n');
   for (const line of lines) {
     const trimmed = line.trim();
-    if (!trimmed) continue;
-    const heading = trimmed.match(/^#+\s+(.+)/);
-    if (heading) return heading[1];
-    return trimmed;
+    if (trimmed) {
+      const heading = trimmed.match(/^#+\s+(.+)/);
+      if (heading) return heading[1];
+      return trimmed;
+    }
   }
   return '(untitled)';
 }
@@ -85,10 +86,16 @@ export async function loadSkillsIndex(
       try {
         const pathSegment = `${SKILLS_PATH}/${item.name}${item.ext && !item.name.endsWith('.md') ? `.${item.ext}` : ''}`;
         const target = source === 'org' ? '.da' : site;
-        const subPath = source === 'org' ? `skills/${item.name}${item.ext && !item.name.endsWith('.md') ? `.${item.ext}` : ''}` : pathSegment;
+        const subPath =
+          source === 'org'
+            ? `skills/${item.name}${item.ext && !item.name.endsWith('.md') ? `.${item.ext}` : ''}`
+            : pathSegment;
 
         const content = await client.getSource(org, target, subPath);
-        const body = typeof content === 'string' ? content : (content as unknown as { content?: string })?.content ?? '';
+        const body =
+          typeof content === 'string'
+            ? content
+            : ((content as unknown as { content?: string })?.content ?? '');
         return { id, title: extractTitle(body) };
       } catch {
         return { id, title: id };
@@ -114,7 +121,10 @@ export async function loadSkillContent(
   // Site-level
   try {
     const content = await client.getSource(org, site, `${SKILLS_PATH}/${filename}`);
-    const body = typeof content === 'string' ? content : (content as unknown as { content?: string })?.content ?? '';
+    const body =
+      typeof content === 'string'
+        ? content
+        : ((content as unknown as { content?: string })?.content ?? '');
     if (body) return body;
   } catch {
     // fall through to org-level
@@ -123,7 +133,10 @@ export async function loadSkillContent(
   // Org-level
   try {
     const content = await client.getSource(org, '.da', `skills/${filename}`);
-    const body = typeof content === 'string' ? content : (content as unknown as { content?: string })?.content ?? '';
+    const body =
+      typeof content === 'string'
+        ? content
+        : ((content as unknown as { content?: string })?.content ?? '');
     if (body) return body;
   } catch {
     // not found

@@ -1,6 +1,6 @@
 module.exports = {
   root: true,
-  extends: '@adobe/helix',
+  extends: ['@adobe/helix', 'prettier'],
   env: {
     serviceworker: true,
     browser: true,
@@ -17,6 +17,7 @@ module.exports = {
       plugins: ['@typescript-eslint'],
       extends: [
         'plugin:@typescript-eslint/recommended',
+        'prettier',
       ],
       settings: {
         'import/resolver': {
