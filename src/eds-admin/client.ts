@@ -30,29 +30,39 @@ export class EDSAdminClient {
   private authHeaders(): Headers {
     const headers = new Headers();
     headers.set('Authorization', `Bearer ${this.apiToken}`);
-    headers.set('x-auth-token', this.apiToken);
     headers.set('x-content-source-authorization', `Bearer ${this.apiToken}`);
     return headers;
   }
 
   private async post(endpoint: string): Promise<Response> {
+    const url = `https://admin.hlx.page${endpoint}`;
+    const headers = this.authHeaders();
+    console.log(`EDS Admin API Call: POST ${url}`);
+
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+    const startTime = Date.now();
 
     try {
-      const response = await fetch(`https://admin.hlx.page${endpoint}`, {
+      const response = await fetch(url, {
         method: 'POST',
-        headers: this.authHeaders(),
+        headers,
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
+
+      const duration = Date.now() - startTime;
+      console.log('EDS Admin API Response:', response.status, response.statusText, `(${duration}ms)`);
+
       return response;
     } catch (err) {
       clearTimeout(timeoutId);
       if (err instanceof Error && err.name === 'AbortError') {
+        console.log('EDS Admin API Timeout after', this.timeout, 'ms');
         const timeoutError: EDSAPIError = { status: 408, message: 'Request timeout' };
         throw timeoutError;
       }
+      console.log('EDS Admin API Request Failed:', err);
       throw err;
     }
   }
@@ -71,6 +81,8 @@ export class EDSAdminClient {
         // non-JSON error body — use statusText
       }
       const error: EDSAPIError = { status: response.status, message };
+      console.log('EDS Admin API Error:', error.status, error.message);
+      console.log('  Response Headers:', Object.fromEntries(response.headers.entries()));
       throw error;
     }
 
