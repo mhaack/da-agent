@@ -1,3 +1,20 @@
+# [1.2.0](https://github.com/adobe-rnd/da-agent/compare/v1.1.0...v1.2.0) (2026-03-25)
+
+
+### Bug Fixes
+
+* surface inner status from EDS API response, improve error test coverage ([9e2c253](https://github.com/adobe-rnd/da-agent/commit/9e2c253e4726f0069c7ef19c66191545d0b31ec5))
+* use null consistently for absent clients in server and tools options ([a1539a7](https://github.com/adobe-rnd/da-agent/commit/a1539a7114dfac2c4f3ec9c6bffe0b7962499f7a))
+
+
+### Features
+
+* add EDS admin API types ([2ea4843](https://github.com/adobe-rnd/da-agent/commit/2ea4843c7c6b6b941193a1c519d2c51b1efba88d))
+* add eds_preview and eds_publish tools ([0ec4a1a](https://github.com/adobe-rnd/da-agent/commit/0ec4a1adb789cde24e699d6f104944bc6523b167))
+* add EDSAdminClient for preview and live publish ([29cb543](https://github.com/adobe-rnd/da-agent/commit/29cb5439d3c383eb0e87f60f98abaa7dc916877e))
+* add preview and publish support ([e4aa296](https://github.com/adobe-rnd/da-agent/commit/e4aa2960771f72f9b1e44cbd1a28829d47bb0d20))
+* wire up EDSAdminClient in server for preview/publish tools ([be5797b](https://github.com/adobe-rnd/da-agent/commit/be5797b72f2e67cd7137c991e06e0fc0562f5116))
+
 # [1.1.0](https://github.com/adobe-rnd/da-agent/compare/v1.0.2...v1.1.0) (2026-03-25)
 
 
