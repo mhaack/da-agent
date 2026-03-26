@@ -1,3 +1,10 @@
+## [1.8.1](https://github.com/adobe-rnd/da-agent/compare/v1.8.0...v1.8.1) (2026-03-26)
+
+
+### Bug Fixes
+
+* instruct system prompt to use correct image urls ([25057f7](https://github.com/adobe-rnd/da-agent/commit/25057f75fdd375d5ac6c6e1bdcd40f36fe768928))
+
 # [1.8.0](https://github.com/adobe-rnd/da-agent/compare/v1.7.0...v1.8.0) (2026-03-26)
 
 
