@@ -545,9 +545,11 @@ const bulkAemCanvasDialogOutputSchema = z.object({
         ok: z.boolean(),
         status: z.string().optional(),
         message: z.string().optional(),
+        publishedUrl: z.string().optional(),
       }),
     )
     .optional(),
+  publishedUrls: z.array(z.string()).optional(),
 });
 
 const bulkAemPagesInputSchema = z.object({
@@ -579,7 +581,8 @@ export function createCanvasClientTools() {
         "Open a bulk publish dialog in the user's browser to publish multiple DA pages to AEM live (preview then live). " +
         'Use when the user wants to publish several pages at once from the canvas workspace. ' +
         'Paths may be relative to the current org/repo or full "org/repo/path/to/page.html". ' +
-        'The user runs the action in the dialog; results return after they finish or cancel.',
+        'The user runs the action in the dialog; results return after they finish or cancel, including publishedUrls ' +
+        'formatted like "https://main--site--org.aem.page/path" for successful publishes.',
       inputSchema: bulkAemPagesInputSchema,
       outputSchema: bulkAemCanvasDialogOutputSchema,
     }),

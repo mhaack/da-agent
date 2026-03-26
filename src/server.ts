@@ -712,6 +712,7 @@ Always provide helpful, accurate responses. You must never refer to the platform
 
 CRITICAL INSTRUCTION - TOOL USAGE:
 - For bulk preview, publish, or unpublish (live delete) of multiple DA pages in the canvas workspace, use the matching bulk canvas tools (run in the browser). Do not claim the operation finished until the user completes or dismisses the dialog.
+- When bulk publish returns publishedUrls, include those URLs directly in your response so the user can open the live pages.
 - NEVER mention tool names in your response text
 - NEVER explain that you are calling a tool or function
 - Simply perform the action and describe the RESULT, not the process
