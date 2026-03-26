@@ -155,18 +155,13 @@ export class CollabClient {
 
     const WSClass = createServiceBindingWSClass(this.binding);
 
-    this.provider = new WebsocketProvider(
-      'https://da-collab',
-      this.docPath,
-      this.ydoc,
-      {
-        protocols: ['yjs', this.imsToken],
-        connect: true,
-        disableBc: true,
-        // @ts-expect-error -- ServiceBindingWebSocket is compatible but not a WebSocket subclass
-        WebSocketPolyfill: WSClass,
-      },
-    );
+    this.provider = new WebsocketProvider('https://da-collab', this.docPath, this.ydoc, {
+      protocols: ['yjs', this.imsToken],
+      connect: true,
+      disableBc: true,
+      // @ts-expect-error -- ServiceBindingWebSocket is compatible but not a WebSocket subclass
+      WebSocketPolyfill: WSClass,
+    });
 
     this.provider.on('status', (event: { status: string }) => {
       console.log(`[CollabClient] Status: ${event.status} for ${this.docPath}`);
@@ -174,7 +169,9 @@ export class CollabClient {
 
     await new Promise<void>((resolve) => {
       const timeout = setTimeout(() => {
-        console.warn(`[CollabClient] Connection timeout after 5s for ${this.docPath} — proceeding without collab`);
+        console.warn(
+          `[CollabClient] Connection timeout after 5s for ${this.docPath} — proceeding without collab`,
+        );
         this.isConnected = false;
         resolve();
       }, 5000);
@@ -184,7 +181,9 @@ export class CollabClient {
           clearTimeout(timeout);
           this.isConnected = true;
           this.status = 'connected';
-          console.log(`[CollabClient] Joined collab session: ${this.docPath} as "${this.userName}"`);
+          console.log(
+            `[CollabClient] Joined collab session: ${this.docPath} as "${this.userName}"`,
+          );
           this.setAwarenessState('connected');
           this.setCursorAtStart();
           resolve();

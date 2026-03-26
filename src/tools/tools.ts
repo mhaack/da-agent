@@ -9,6 +9,9 @@ import { z } from 'zod';
 import type { DAAdminClient } from '../da-admin/client';
 import type { DAAPIError } from '../da-admin/types';
 import type { CollabClient } from '../collab-client';
+import { loadSkillContent, saveSkillContent } from '../skills/loader';
+import { listAgentPresets, saveAgentPreset } from '../agents/loader';
+import type { AgentPreset } from '../agents/loader';
 import { ensureHtmlExtension } from './utils';
 import type { EDSAdminClient } from '../eds-admin/client';
 import type { EDSOperationResult, EDSPublishResult, EDSToolError } from '../eds-admin/types';
@@ -41,22 +44,20 @@ function useCollabForDoc(
   options?: DAToolsOptions,
 ): boolean {
   if (!options?.pageContext || !options?.collab?.isConnected) return false;
-  const {
-    org: ctxOrg,
-    site: ctxSite,
-    path: ctxPath,
-    view,
-  } = options.pageContext;
+  const { org: ctxOrg, site: ctxSite, path: ctxPath, view } = options.pageContext;
   if (view !== 'edit') return false;
   return (
-    ctxOrg === org
-    && ctxSite === repo
-    && ensureHtmlExtension(ctxPath) === ensureHtmlExtension(path)
+    ctxOrg === org && ctxSite === repo && ensureHtmlExtension(ctxPath) === ensureHtmlExtension(path)
   );
 }
 
-export function createDATools(client: DAAdminClient | null, options?: DAToolsOptions) {
+export function createDATools(
+  client: DAAdminClient | null,
+  options?: DAToolsOptions & { org?: string; repo?: string },
+) {
   const opts = options;
+  const ctxOrg = opts?.org ?? opts?.pageContext?.org ?? '';
+  const ctxRepo = opts?.repo ?? opts?.pageContext?.site ?? '';
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const tools: Record<string, any> = {};
@@ -72,9 +73,7 @@ export function createDATools(client: DAAdminClient | null, options?: DAToolsOpt
         path: z
           .string()
           .optional()
-          .describe(
-            'Optional path within repository (e.g., "docs/guides"). Leave empty for root.',
-          ),
+          .describe('Optional path within repository (e.g., "docs/guides"). Leave empty for root.'),
       }),
       execute: async ({ org, repo, path }) => {
         try {
@@ -92,11 +91,7 @@ export function createDATools(client: DAAdminClient | null, options?: DAToolsOpt
       inputSchema: z.object({
         org: z.string().describe('Organization name'),
         repo: z.string().describe('Repository name'),
-        path: z
-          .string()
-          .describe(
-            'Path to the file within the repository (e.g., "docs/index.md")',
-          ),
+        path: z.string().describe('Path to the file within the repository (e.g., "docs/index.md")'),
       }),
       execute: async ({ org, repo, path }) => {
         try {
@@ -120,32 +115,26 @@ export function createDATools(client: DAAdminClient | null, options?: DAToolsOpt
 
     tools.content_create = tool({
       description:
-        'Create a new source file in a DA repository with the specified content. '
-        + 'Content MUST be a plain HTML string (no CDATA, no markdown fences) starting with <body> and ending with </body>, '
-        + 'with all page content wrapped in <main> inside <body>. '
-        + 'Separate sections with <hr>, represent EDS blocks as <div class="block-name"> elements where each '
-        + 'content row is a child <div> and each column a nested <div>, use proper semantic HTML elements '
-        + '(headings, p, ul/ol/li, a, img with alt), and never use inline styles or <table> tags for blocks.',
+        'Create a new source file in a DA repository with the specified content. ' +
+        'Content MUST be a plain HTML string (no CDATA, no markdown fences) starting with <body> and ending with </body>, ' +
+        'with all page content wrapped in <main> inside <body>. ' +
+        'Separate sections with <hr>, represent EDS blocks as <div class="block-name"> elements where each ' +
+        'content row is a child <div> and each column a nested <div>, use proper semantic HTML elements ' +
+        '(headings, p, ul/ol/li, a, img with alt), and never use inline styles or <table> tags for blocks.',
       inputSchema: z.object({
         org: z.string().describe('Organization name'),
         repo: z.string().describe('Repository name'),
         path: z
           .string()
-          .describe(
-            'Path where the new file should be created (e.g., "docs/new-page.md")',
-          ),
+          .describe('Path where the new file should be created (e.g., "docs/new-page.md")'),
         content: z.string().describe('Content of the new file'),
         contentType: z
           .string()
           .optional()
-          .describe(
-            'Optional content type (e.g., "text/markdown", "text/html")',
-          ),
+          .describe('Optional content type (e.g., "text/markdown", "text/html")'),
       }),
       needsApproval: async () => true,
-      execute: async ({
-        org, repo, path, content, contentType,
-      }) => {
+      execute: async ({ org, repo, path, content, contentType }) => {
         try {
           return await client.createSource(
             org,
@@ -163,14 +152,14 @@ export function createDATools(client: DAAdminClient | null, options?: DAToolsOpt
 
     tools.content_update = tool({
       description:
-        'Update an existing source file in a DA repository with new content. '
-        + 'Content MUST be a plain HTML string (no CDATA, no markdown fences) starting with <body> and ending with </body>, '
-        + 'with all page content wrapped in <main> inside <body>. '
-        + 'Separate sections with <hr>, represent EDS blocks as <div class="block-name"> elements where each '
-        + 'content row is a child <div> and each column a nested <div>, use proper semantic HTML elements '
-        + '(headings, p, ul/ol/li, a, img with alt), and never use inline styles or <table> tags for blocks. '
-        + 'Always set humanReadableSummary to a short, clear explanation of what you changed (sections added/removed, '
-        + 'copy edits, block changes, etc.) so the user can approve without reading the full HTML.',
+        'Update an existing source file in a DA repository with new content. ' +
+        'Content MUST be a plain HTML string (no CDATA, no markdown fences) starting with <body> and ending with </body>, ' +
+        'with all page content wrapped in <main> inside <body>. ' +
+        'Separate sections with <hr>, represent EDS blocks as <div class="block-name"> elements where each ' +
+        'content row is a child <div> and each column a nested <div>, use proper semantic HTML elements ' +
+        '(headings, p, ul/ol/li, a, img with alt), and never use inline styles or <table> tags for blocks. ' +
+        'Always set humanReadableSummary to a short, clear explanation of what you changed (sections added/removed, ' +
+        'copy edits, block changes, etc.) so the user can approve without reading the full HTML.',
       inputSchema: z.object({
         org: z.string().describe('Organization name'),
         repo: z.string().describe('Repository name'),
@@ -179,20 +168,20 @@ export function createDATools(client: DAAdminClient | null, options?: DAToolsOpt
         humanReadableSummary: z
           .string()
           .describe(
-            'Brief plain-language summary of edits for the user (bullet-style or sentences). '
-              + 'No HTML; describe what changed, not the raw markup.',
+            'Brief plain-language summary of edits for the user (bullet-style or sentences). ' +
+              'No HTML; describe what changed, not the raw markup.',
           ),
         contentType: z.string().optional().describe('Optional content type'),
       }),
       needsApproval: async () => true,
-      execute: async ({
-        org, repo, path, content, contentType,
-      }) => {
+      execute: async ({ org, repo, path, content, contentType }) => {
         const pathWithExt = ensureHtmlExtension(path);
         try {
           if (useCollabForDoc(org, repo, path, opts) && opts?.collab) {
             opts.collab.applyContent(content);
-            await client.updateSource(org, repo, pathWithExt, content, contentType, { initiator: 'collab' });
+            await client.updateSource(org, repo, pathWithExt, content, contentType, {
+              initiator: 'collab',
+            });
             opts.collab.disconnect();
             return { path: pathWithExt, source: 'collab', updated: true };
           }
@@ -230,13 +219,9 @@ export function createDATools(client: DAAdminClient | null, options?: DAToolsOpt
         org: z.string().describe('Organization name'),
         repo: z.string().describe('Repository name'),
         sourcePath: z.string().describe('Path to the source file to copy from'),
-        destinationPath: z
-          .string()
-          .describe('Path where the file should be copied to'),
+        destinationPath: z.string().describe('Path where the file should be copied to'),
       }),
-      execute: async ({
-        org, repo, sourcePath, destinationPath,
-      }) => {
+      execute: async ({ org, repo, sourcePath, destinationPath }) => {
         try {
           return await client.copyContent(
             org,
@@ -258,14 +243,10 @@ export function createDATools(client: DAAdminClient | null, options?: DAToolsOpt
         org: z.string().describe('Organization name'),
         repo: z.string().describe('Repository name'),
         sourcePath: z.string().describe('Path to the source file to move from'),
-        destinationPath: z
-          .string()
-          .describe('Path where the file should be moved to'),
+        destinationPath: z.string().describe('Path where the file should be moved to'),
       }),
       needsApproval: async () => true,
-      execute: async ({
-        org, repo, sourcePath, destinationPath,
-      }) => {
+      execute: async ({ org, repo, sourcePath, destinationPath }) => {
         try {
           return await client.moveContent(
             org,
@@ -288,14 +269,10 @@ export function createDATools(client: DAAdminClient | null, options?: DAToolsOpt
         repo: z.string().describe('Repository name'),
         path: z
           .string()
-          .describe(
-            'Path to the file including extension (e.g., "docs/my-page.html")',
-          ),
+          .describe('Path to the file including extension (e.g., "docs/my-page.html")'),
         label: z.string().optional().describe('Optional label for the version'),
       }),
-      execute: async ({
-        org, repo, path, label,
-      }) => {
+      execute: async ({ org, repo, path, label }) => {
         try {
           return await client.createVersion(org, repo, ensureHtmlExtension(path), label);
         } catch (e) {
@@ -361,30 +338,30 @@ export function createDATools(client: DAAdminClient | null, options?: DAToolsOpt
 
     tools.content_upload = tool({
       description:
-        'Upload an image or media file to a DA repository. '
-        + 'When the user attached files to their latest message, use attachmentRef from the provided list '
-        + 'instead of sending base64Data directly. '
-        + 'When uploading images referenced in a page (e.g. during page creation or update), '
-        + 'place the image in a child folder named after the page, sibling to the page file '
-        + '(e.g. page at "docs/my-page.html" → image at "docs/.my-page/image.png" with the folder name with a leading dot). '
-        + 'For standalone media uploads unrelated to a specific page, use the "media" folder '
-        + '(e.g. "media/image.png").',
+        'Upload an image or media file to a DA repository. ' +
+        'When the user attached files to their latest message, use attachmentRef from the provided list ' +
+        'instead of sending base64Data directly. ' +
+        'When uploading images referenced in a page (e.g. during page creation or update), ' +
+        'place the image in a child folder named after the page, sibling to the page file ' +
+        '(e.g. page at "docs/my-page.html" → image at "docs/.my-page/image.png" with the folder name with a leading dot). ' +
+        'For standalone media uploads unrelated to a specific page, use the "media" folder ' +
+        '(e.g. "media/image.png").',
       inputSchema: z.object({
         org: z.string().describe('Organization name'),
         repo: z.string().describe('Repository name'),
         path: z
           .string()
           .describe(
-            'Destination path for the media file. '
-              + 'For page-related images use a dot-prefixed folder named after the page: "docs/.my-page/image.png". '
-              + 'For standalone uploads use the media folder: "media/image.png".',
+            'Destination path for the media file. ' +
+              'For page-related images use a dot-prefixed folder named after the page: "docs/.my-page/image.png". ' +
+              'For standalone uploads use the media folder: "media/image.png".',
           ),
         attachmentRef: z
           .string()
           .optional()
           .describe(
-            'Reference id of a file attached by the user in their latest message. '
-            + 'Prefer this over inline base64 when available.',
+            'Reference id of a file attached by the user in their latest message. ' +
+              'Prefer this over inline base64 when available.',
           ),
         base64Data: z
           .string()
@@ -393,15 +370,17 @@ export function createDATools(client: DAAdminClient | null, options?: DAToolsOpt
         mimeType: z
           .string()
           .optional()
-          .describe('MIME type of the file (e.g., "image/png", "image/jpeg"). Required when using base64Data.'),
+          .describe(
+            'MIME type of the file (e.g., "image/png", "image/jpeg"). Required when using base64Data.',
+          ),
         fileName: z
           .string()
           .optional()
-          .describe('Original filename including extension (e.g., "photo.jpg"). Required when using base64Data.'),
+          .describe(
+            'Original filename including extension (e.g., "photo.jpg"). Required when using base64Data.',
+          ),
       }),
-      execute: async ({
-        org, repo, path, attachmentRef, base64Data, mimeType, fileName,
-      }) => {
+      execute: async ({ org, repo, path, attachmentRef, base64Data, mimeType, fileName }) => {
         try {
           let resolvedBase64 = base64Data;
           let resolvedMime = mimeType;
@@ -419,7 +398,8 @@ export function createDATools(client: DAAdminClient | null, options?: DAToolsOpt
           }
           if (!resolvedBase64 || !resolvedMime || !resolvedName) {
             return {
-              error: 'Missing upload payload. Provide attachmentRef or base64Data + mimeType + fileName.',
+              error:
+                'Missing upload payload. Provide attachmentRef or base64Data + mimeType + fileName.',
             };
           }
           return await client.uploadMedia(
@@ -432,6 +412,109 @@ export function createDATools(client: DAAdminClient | null, options?: DAToolsOpt
           );
         } catch (e) {
           if (isAPIError(e)) return { error: e.message, status: e.status };
+          return { error: String(e) };
+        }
+      },
+    });
+
+    tools.da_get_skill = tool({
+      description:
+        'Retrieve the full content of a skill by its ID. Skills are markdown documents ' +
+        'containing detailed instructions for specific tasks such as brand voice, SEO ' +
+        'checklists, or workflows that may reference MCP tools. Use this when the user ' +
+        'asks about or wants to apply a skill listed in the Available Skills section.',
+      inputSchema: z.object({
+        skillId: z.string().describe('The skill identifier (e.g., "brand-voice", "seo-checklist")'),
+      }),
+      execute: async ({ skillId }) => {
+        if (!ctxOrg) return { error: 'No organization context available' };
+        try {
+          const content = await loadSkillContent(client, ctxOrg, ctxRepo, skillId);
+          if (!content) return { error: `Skill "${skillId}" not found` };
+          return { skillId, content };
+        } catch (e) {
+          return { error: String(e) };
+        }
+      },
+    });
+
+    tools.da_create_skill = tool({
+      description:
+        'Create or update a skill. Skills are reusable markdown documents with instructions ' +
+        'that guide the assistant on specific tasks. They can reference MCP tools by name ' +
+        '(e.g., mcp__<serverId>__<toolName>). Use this when the user wants to save a set ' +
+        'of instructions as a reusable skill.',
+      inputSchema: z.object({
+        skillId: z
+          .string()
+          .describe('Skill identifier (lowercase alphanumeric with hyphens, e.g., "brand-voice")'),
+        content: z.string().describe('Full markdown content of the skill'),
+      }),
+      needsApproval: async () => true,
+      execute: async ({ skillId, content }) => {
+        if (!ctxOrg) return { error: 'No organization context available' };
+        try {
+          const result = await saveSkillContent(client, ctxOrg, ctxRepo, skillId, content);
+          if (!result.success) return { error: result.error };
+          return { skillId, saved: true };
+        } catch (e) {
+          return { error: String(e) };
+        }
+      },
+    });
+
+    tools.da_list_agents = tool({
+      description:
+        'List available agent presets. Agent presets are named configurations that bundle ' +
+        'a system prompt, skills, and MCP server selections into a reusable persona ' +
+        '(e.g., "SEO Agent", "Brand Voice Agent").',
+      inputSchema: z.object({}),
+      execute: async () => {
+        if (!ctxOrg) return { error: 'No organization context available' };
+        try {
+          return await listAgentPresets(client, ctxOrg, ctxRepo);
+        } catch (e) {
+          return { error: String(e) };
+        }
+      },
+    });
+
+    tools.da_create_agent = tool({
+      description:
+        'Create or update an agent preset. An agent preset bundles a custom system prompt, ' +
+        'a list of skill IDs, and a list of MCP server IDs into a named configuration ' +
+        'that can be activated for specialized workflows.',
+      inputSchema: z.object({
+        agentId: z
+          .string()
+          .describe('Agent identifier (lowercase alphanumeric with hyphens, e.g., "seo-agent")'),
+        name: z.string().describe('Display name for the agent'),
+        description: z.string().describe('Brief description of what this agent does'),
+        systemPrompt: z.string().describe('Custom system prompt instructions for this agent'),
+        skills: z
+          .array(z.string())
+          .optional()
+          .describe('Skill IDs to auto-load when this agent is active'),
+        mcpServers: z
+          .array(z.string())
+          .optional()
+          .describe('MCP server IDs to use with this agent'),
+      }),
+      needsApproval: async () => true,
+      execute: async ({ agentId, name, description, systemPrompt, skills, mcpServers }) => {
+        if (!ctxOrg) return { error: 'No organization context available' };
+        try {
+          const preset: AgentPreset = {
+            name,
+            description,
+            systemPrompt,
+            skills: skills ?? [],
+            mcpServers: mcpServers ?? [],
+          };
+          const result = await saveAgentPreset(client, ctxOrg, ctxRepo, agentId, preset);
+          if (!result.success) return { error: result.error };
+          return { agentId, saved: true };
+        } catch (e) {
           return { error: String(e) };
         }
       },
@@ -484,28 +567,28 @@ export function createCanvasClientTools() {
   return {
     da_bulk_preview: tool({
       description:
-        'Open a bulk preview dialog in the user\'s browser for multiple DA pages at once. '
-        + 'Use when the user wants to preview several pages in the canvas workspace without opening each one manually. '
-        + 'Paths may be relative to the current org/repo (e.g. "folder/page.html") or full "org/repo/path/to/page.html". '
-        + 'The user confirms in the dialog; results are returned after they finish or cancel.',
+        "Open a bulk preview dialog in the user's browser for multiple DA pages at once. " +
+        'Use when the user wants to preview several pages in the canvas workspace without opening each one manually. ' +
+        'Paths may be relative to the current org/repo (e.g. "folder/page.html") or full "org/repo/path/to/page.html". ' +
+        'The user confirms in the dialog; results are returned after they finish or cancel.',
       inputSchema: bulkAemPagesInputSchema,
       outputSchema: bulkAemCanvasDialogOutputSchema,
     }),
     da_bulk_publish: tool({
       description:
-        'Open a bulk publish dialog in the user\'s browser to publish multiple DA pages to AEM live (preview then live). '
-        + 'Use when the user wants to publish several pages at once from the canvas workspace. '
-        + 'Paths may be relative to the current org/repo or full "org/repo/path/to/page.html". '
-        + 'The user runs the action in the dialog; results return after they finish or cancel.',
+        "Open a bulk publish dialog in the user's browser to publish multiple DA pages to AEM live (preview then live). " +
+        'Use when the user wants to publish several pages at once from the canvas workspace. ' +
+        'Paths may be relative to the current org/repo or full "org/repo/path/to/page.html". ' +
+        'The user runs the action in the dialog; results return after they finish or cancel.',
       inputSchema: bulkAemPagesInputSchema,
       outputSchema: bulkAemCanvasDialogOutputSchema,
     }),
     da_bulk_delete: tool({
       description:
-        'Open a bulk delete dialog in the user\'s browser to unpublish multiple pages from AEM live (DELETE on live). '
-        + 'Use only when the user explicitly wants to remove published pages. '
-        + 'Paths may be relative to the current org/repo or full "org/repo/path/to/page.html". '
-        + 'The user confirms in the dialog; results return after they finish or cancel.',
+        "Open a bulk delete dialog in the user's browser to unpublish multiple pages from AEM live (DELETE on live). " +
+        'Use only when the user explicitly wants to remove published pages. ' +
+        'Paths may be relative to the current org/repo or full "org/repo/path/to/page.html". ' +
+        'The user confirms in the dialog; results return after they finish or cancel.',
       inputSchema: bulkAemPagesInputSchema,
       outputSchema: bulkAemCanvasDialogOutputSchema,
     }),
@@ -518,13 +601,15 @@ export function createEDSTools(client: EDSAdminClient) {
 
   tools.content_preview = tool({
     description:
-      'Preview a page on the EDS (Edge Delivery Services) preview environment. '
-      + 'Triggers a preview build so changes become visible at the preview URL. '
-      + 'Use this after saving content changes to verify them before publishing.',
+      'Preview a page on the EDS (Edge Delivery Services) preview environment. ' +
+      'Triggers a preview build so changes become visible at the preview URL. ' +
+      'Use this after saving content changes to verify them before publishing.',
     inputSchema: z.object({
       org: z.string().describe('Organization name (owner)'),
       repo: z.string().describe('Repository / site name'),
-      path: z.string().describe('Page path (e.g. "/docs/index" or "/docs/index.html" — .html will be stripped)'),
+      path: z
+        .string()
+        .describe('Page path (e.g. "/docs/index" or "/docs/index.html" — .html will be stripped)'),
     }),
     execute: async ({ org, repo, path }): Promise<EDSOperationResult | EDSToolError> => {
       try {
@@ -538,14 +623,16 @@ export function createEDSTools(client: EDSAdminClient) {
 
   tools.content_publish = tool({
     description:
-      'Publish a page to the EDS (Edge Delivery Services) live environment. '
-      + 'First triggers a preview build, then promotes the page to live. '
-      + 'If preview fails, publishing is aborted. '
-      + 'Use this to make content publicly available.',
+      'Publish a page to the EDS (Edge Delivery Services) live environment. ' +
+      'First triggers a preview build, then promotes the page to live. ' +
+      'If preview fails, publishing is aborted. ' +
+      'Use this to make content publicly available.',
     inputSchema: z.object({
       org: z.string().describe('Organization name (owner)'),
       repo: z.string().describe('Repository / site name'),
-      path: z.string().describe('Page path (e.g. "/docs/index" or "/docs/index.html" — .html will be stripped)'),
+      path: z
+        .string()
+        .describe('Page path (e.g. "/docs/index" or "/docs/index.html" — .html will be stripped)'),
     }),
     execute: async ({ org, repo, path }): Promise<EDSPublishResult | EDSToolError> => {
       let preview: EDSOperationResult;
@@ -559,8 +646,6 @@ export function createEDSTools(client: EDSAdminClient) {
         const live = await client.publishLive(org, repo, path);
         return { preview, live };
       } catch (e) {
-        // Preview succeeded but live failed; only the error is returned (preview result dropped).
-        // Future: return { preview, error, status } to let the model surface partial success.
         if (isAPIError(e)) return { error: e.message, status: e.status };
         return { error: String(e) };
       }
@@ -569,12 +654,14 @@ export function createEDSTools(client: EDSAdminClient) {
 
   tools.content_unpreview = tool({
     description:
-      'Remove a page from the EDS (Edge Delivery Services) preview environment. '
-      + 'Use this to retract a page from preview without affecting the live site.',
+      'Remove a page from the EDS (Edge Delivery Services) preview environment. ' +
+      'Use this to retract a page from preview without affecting the live site.',
     inputSchema: z.object({
       org: z.string().describe('Organization name (owner)'),
       repo: z.string().describe('Repository / site name'),
-      path: z.string().describe('Page path (e.g. "/docs/index" or "/docs/index.html" — .html will be stripped)'),
+      path: z
+        .string()
+        .describe('Page path (e.g. "/docs/index" or "/docs/index.html" — .html will be stripped)'),
     }),
     execute: async ({ org, repo, path }): Promise<EDSOperationResult | EDSToolError> => {
       try {
@@ -588,12 +675,14 @@ export function createEDSTools(client: EDSAdminClient) {
 
   tools.content_unpublish = tool({
     description:
-      'Unpublish a page from the EDS (Edge Delivery Services) live environment. '
-      + 'Removes the page from the live site without deleting the source content.',
+      'Unpublish a page from the EDS (Edge Delivery Services) live environment. ' +
+      'Removes the page from the live site without deleting the source content.',
     inputSchema: z.object({
       org: z.string().describe('Organization name (owner)'),
       repo: z.string().describe('Repository / site name'),
-      path: z.string().describe('Page path (e.g. "/docs/index" or "/docs/index.html" — .html will be stripped)'),
+      path: z
+        .string()
+        .describe('Page path (e.g. "/docs/index" or "/docs/index.html" — .html will be stripped)'),
     }),
     execute: async ({ org, repo, path }): Promise<EDSOperationResult | EDSToolError> => {
       try {

@@ -1,9 +1,5 @@
 import { createAmazonBedrock } from '@ai-sdk/amazon-bedrock';
-import {
-  streamText,
-  stepCountIs,
-  type ModelMessage,
-} from 'ai';
+import { streamText, stepCountIs, type ModelMessage } from 'ai';
 import { z } from 'zod';
 import { DAAdminClient } from './da-admin/client.js';
 import { EDSAdminClient } from './eds-admin/client.js';
@@ -11,10 +7,17 @@ import { createCanvasClientTools, createDATools, createEDSTools } from './tools/
 import { ensureHtmlExtension } from './tools/utils.js';
 import { createCollabClient } from './collab-client.js';
 import { initTelemetry, flushTelemetry } from './telemetry.js';
+import type { MCPServerConfig } from './mcp/types.js';
+import { loadSkillsIndex, loadSkillContent } from './skills/loader.js';
+import type { SkillsIndex } from './skills/loader.js';
+import { loadAgentPreset } from './agents/loader.js';
+import type { AgentPreset } from './agents/loader.js';
+import { connectAndRegisterMCPTools } from './mcp/tool-adapter.js';
+import { MCPClient } from './mcp/client.js';
 
 const CORS_HEADERS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
 
@@ -29,13 +32,20 @@ const ChatRequestSchema = z.object({
   messages: z.array(z.any()),
   pageContext: PageContextSchema.optional(),
   imsToken: z.string().optional(),
-  attachments: z.array(z.object({
-    id: z.string().min(1),
-    fileName: z.string().min(1),
-    mediaType: z.string().min(1),
-    dataBase64: z.string().min(1),
-    sizeBytes: z.number().int().nonnegative().optional(),
-  })).optional(),
+  agentId: z.string().optional(),
+  requestedSkills: z.array(z.string()).optional(),
+  mcpServers: z.record(z.string(), z.string()).optional(),
+  attachments: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        fileName: z.string().min(1),
+        mediaType: z.string().min(1),
+        dataBase64: z.string().min(1),
+        sizeBytes: z.number().int().nonnegative().optional(),
+      }),
+    )
+    .optional(),
 });
 
 type PageContext = z.infer<typeof PageContextSchema>;
@@ -56,6 +66,10 @@ export default {
       }
     }
 
+    if (url.pathname === '/mcp-tools' && request.method === 'POST') {
+      return handleMcpToolsList(request);
+    }
+
     return new Response('Not found', { status: 404 });
   },
 } satisfies ExportedHandler<Env>;
@@ -73,19 +87,22 @@ export default {
  * 4. Strips tool-approval-request parts from assistant messages.
  */
 /* eslint-disable @typescript-eslint/no-explicit-any, no-await-in-loop */
-async function resolveApprovals(
-  messages: any[],
-  daTools: Record<string, any>,
-): Promise<any[]> {
+async function resolveApprovals(messages: any[], daTools: Record<string, any>): Promise<any[]> {
   const result: any[] = messages.map((m) => ({
     ...m,
     content: Array.isArray(m.content) ? [...m.content] : m.content,
   }));
 
   // 1. Build lookup: approvalId → { toolCallId, toolName, args, msgIdx }
-  const approvalMeta = new Map<string, {
-    toolCallId: string; toolName: string; args: any; msgIdx: number;
-  }>();
+  const approvalMeta = new Map<
+    string,
+    {
+      toolCallId: string;
+      toolName: string;
+      args: any;
+      msgIdx: number;
+    }
+  >();
   for (let i = 0; i < result.length; i += 1) {
     const msg = result[i];
     if (msg.role === 'assistant' && Array.isArray(msg.content)) {
@@ -130,9 +147,7 @@ async function resolveApprovals(
       if (resp) {
         const meta = approvalMeta.get(resp.approvalId);
         if (meta) {
-          const {
-            toolCallId, toolName, args, msgIdx,
-          } = meta;
+          const { toolCallId, toolName, args, msgIdx } = meta;
 
           // Strip the approval-request from the assistant message
           result[msgIdx].content = result[msgIdx].content.filter(
@@ -143,14 +158,16 @@ async function resolveApprovals(
           if (i < lastConversationIdx) {
             result[i] = {
               role: 'tool',
-              content: [{
-                type: 'tool-result',
-                toolCallId,
-                toolName,
-                output: resp.approved
-                  ? { type: 'text' as const, value: '(previously executed)' }
-                  : { type: 'json' as const, value: { message: 'Action rejected by user.' } },
-              }],
+              content: [
+                {
+                  type: 'tool-result',
+                  toolCallId,
+                  toolName,
+                  output: resp.approved
+                    ? { type: 'text' as const, value: '(previously executed)' }
+                    : { type: 'json' as const, value: { message: 'Action rejected by user.' } },
+                },
+              ],
             };
           } else {
             // Fresh: execute the tool or create rejection result
@@ -168,14 +185,17 @@ async function resolveApprovals(
 
             result[i] = {
               role: 'tool',
-              content: [{
-                type: 'tool-result',
-                toolCallId,
-                toolName,
-                output: typeof output === 'string'
-                  ? { type: 'text', value: output }
-                  : { type: 'json', value: output },
-              }],
+              content: [
+                {
+                  type: 'tool-result',
+                  toolCallId,
+                  toolName,
+                  output:
+                    typeof output === 'string'
+                      ? { type: 'text', value: output }
+                      : { type: 'json', value: output },
+                },
+              ],
             };
           }
         }
@@ -224,37 +244,6 @@ function stripClientOnlyFromArgs(args: any): any {
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
-const SKILLS_PATH = '.da/skills';
-
-async function loadSkills(client: DAAdminClient, org: string, site: string): Promise<string[]> {
-  try {
-    const listing = await client.listSources(org, site, SKILLS_PATH);
-    const mdFiles = listing.filter((s) => s.ext === 'md');
-    console.log(`Skills: found ${mdFiles.length} skill(s) in ${org}/${site}/${SKILLS_PATH}:`, mdFiles.map((f) => f.name));
-    // Paths from list API are absolute (/{org}/{site}/...) — strip prefix for getSource
-    const pathPrefix = `/${org}/${site}/`;
-    const results = await Promise.all(
-      mdFiles.map((f) => {
-        const relativePath = f.path.startsWith(pathPrefix)
-          ? f.path.slice(pathPrefix.length)
-          : f.path;
-        return client.getSource(org, site, relativePath)
-          .then((r) => r as unknown as string)
-          .catch((e) => {
-            console.log(`Skills: failed to load ${f.name}:`, e);
-            return null;
-          });
-      }),
-    );
-    const loaded = results.filter(Boolean) as string[];
-    console.log(`Skills: successfully loaded ${loaded.length}/${mdFiles.length} skill(s)`);
-    return loaded;
-  } catch {
-    console.log(`Skills: no skills folder found at ${org}/${site}/${SKILLS_PATH}`);
-    return [];
-  }
-}
-
 /**
  * Turn per-message selectionContext (page excerpts from quick-edit) into text the model can use.
  * Strips selectionContext from the payload so streamText receives plain CoreMessages.
@@ -294,12 +283,80 @@ function expandUserSelectionContextForModel(messages: any[]): any[] {
   });
 }
 
-function formatAttachmentsForModel(items: Array<{
-  id: string;
-  fileName: string;
-  mediaType: string;
-  sizeBytes?: number;
-}>): string {
+const McpToolsRequestSchema = z.object({
+  servers: z.record(z.string(), z.string()),
+});
+
+/**
+ * Connect to the given MCP servers and list their individual tools.
+ * Accepts POST { servers: { id: url, ... } }.
+ * Returns { servers: [{ id, tools: [{ name, description }], error? }] }.
+ */
+async function handleMcpToolsList(request: Request): Promise<Response> {
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response('Invalid JSON', { status: 400, headers: CORS_HEADERS });
+  }
+
+  const parsed = McpToolsRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return new Response('Expected { servers: Record<string, string> }', {
+      status: 400,
+      headers: CORS_HEADERS,
+    });
+  }
+
+  const serverTools: Array<{
+    id: string;
+    tools: Array<{ name: string; description: string }>;
+    error?: string;
+  }> = [];
+
+  const entries = Object.entries(parsed.data.servers);
+  const clients: MCPClient[] = [];
+
+  await Promise.all(
+    entries.map(async ([serverId, serverUrl]) => {
+      const client = new MCPClient(serverUrl, { timeout: 10000 });
+      try {
+        await client.initialize();
+        clients.push(client);
+        const tools = await client.listTools();
+        serverTools.push({
+          id: serverId,
+          tools: tools.map((t) => ({
+            name: t.name,
+            description: t.description ?? `Tool from ${serverId}`,
+          })),
+        });
+      } catch (e) {
+        serverTools.push({
+          id: serverId,
+          tools: [],
+          error: `Connection failed: ${e instanceof Error ? e.message : String(e)}`,
+        });
+      }
+    }),
+  );
+
+  await Promise.allSettled(clients.map((c) => c.close()));
+
+  return new Response(JSON.stringify({ servers: serverTools }), {
+    status: 200,
+    headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+  });
+}
+
+function formatAttachmentsForModel(
+  items: Array<{
+    id: string;
+    fileName: string;
+    mediaType: string;
+    sizeBytes?: number;
+  }>,
+): string {
   const lines: string[] = [
     'The user attached file(s). Binary contents are not available in chat context.',
     'If you need one for upload, call content_upload using attachmentRef from this list.',
@@ -313,12 +370,15 @@ function formatAttachmentsForModel(items: Array<{
   return lines.join('\n');
 }
 
-function expandLatestUserAttachmentsForModel(messages: any[], attachmentMeta: Array<{
-  id: string;
-  fileName: string;
-  mediaType: string;
-  sizeBytes?: number;
-}>): any[] {
+function expandLatestUserAttachmentsForModel(
+  messages: any[],
+  attachmentMeta: Array<{
+    id: string;
+    fileName: string;
+    mediaType: string;
+    sizeBytes?: number;
+  }>,
+): any[] {
   if (!Array.isArray(attachmentMeta) || attachmentMeta.length === 0) {
     return messages.map((msg) => {
       if (msg.role !== 'user' || !msg || typeof msg !== 'object') return msg;
@@ -373,7 +433,13 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   }
 
   const {
-    messages, pageContext, imsToken, attachments = [],
+    messages,
+    pageContext,
+    imsToken,
+    agentId,
+    requestedSkills,
+    mcpServers,
+    attachments = [],
   } = parsed.data;
 
   const attachmentMap = new Map(attachments.map((a) => [a.id, a]));
@@ -386,21 +452,23 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   const daOrigin = env.DA_ORIGIN ?? 'https://admin.da.live';
   const sourceUrl = `${daOrigin}/source/${pageContext?.org}/${pageContext?.site}/${ensureHtmlExtension(pageContext?.path ?? '')}`;
 
-  const collab = pageContext?.view === 'edit' && imsToken && env.DACOLLAB
-    ? await createCollabClient(sourceUrl, imsToken, pageContext.org, env.DACOLLAB)
-    : null;
+  const collab =
+    pageContext?.view === 'edit' && imsToken && env.DACOLLAB
+      ? await createCollabClient(sourceUrl, imsToken, pageContext.org, env.DACOLLAB)
+      : null;
 
-  const daClient = imsToken && env.DAADMIN
-    ? new DAAdminClient({ apiToken: imsToken, daadminService: env.DAADMIN })
-    : null;
+  const adminClient =
+    imsToken && env.DAADMIN
+      ? new DAAdminClient({ apiToken: imsToken, daadminService: env.DAADMIN })
+      : null;
 
-  const edsClient = imsToken
-    ? new EDSAdminClient({ apiToken: imsToken })
-    : null;
+  const edsClient = imsToken ? new EDSAdminClient({ apiToken: imsToken }) : null;
 
-  const daTools = createDATools(daClient, {
+  const daTools = createDATools(adminClient, {
     pageContext: pageContext ?? undefined,
     collab: collab ?? undefined,
+    org: pageContext?.org,
+    repo: pageContext?.site,
     resolveAttachmentByRef: (attachmentRef: string) => {
       const hit = attachmentMap.get(attachmentRef);
       if (!hit) return null;
@@ -413,16 +481,120 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   });
   const edsTools = edsClient ? createEDSTools(edsClient) : {};
   const canvasClientTools = createCanvasClientTools();
-  const tools = { ...canvasClientTools, ...daTools, ...edsTools };
 
-  const skills = daClient && pageContext
-    ? await loadSkills(daClient, pageContext.org, pageContext.site)
-    : [];
+  // Build MCP config from servers passed by the frontend (from DA config sheet).
+  const requestMcpServers = mcpServers ?? {};
+  const mcpConfig =
+    Object.keys(requestMcpServers).length > 0
+      ? {
+          mcpServers: Object.fromEntries(
+            Object.entries(requestMcpServers).map(([id, url]) => [
+              id,
+              { type: 'sse' as const, url },
+            ]),
+          ) as Record<string, MCPServerConfig>,
+          toolAllowPatterns: Object.keys(requestMcpServers).map((id) => `mcp__${id}__*`),
+        }
+      : null;
+
+  // Load skills index for system prompt injection
+  let skillsIndex: SkillsIndex | null = null;
+  if (adminClient && pageContext) {
+    try {
+      skillsIndex = await loadSkillsIndex(adminClient, pageContext.org, pageContext.site);
+    } catch {
+      // Skills loading is best-effort
+    }
+  }
+
+  // Load agent preset if specified
+  let activeAgent: AgentPreset | null = null;
+  let agentSkillContents: Record<string, string> = {};
+  if (adminClient && pageContext && agentId) {
+    try {
+      activeAgent = await loadAgentPreset(adminClient, pageContext.org, pageContext.site, agentId);
+      if (activeAgent && activeAgent.skills.length > 0) {
+        const entries = await Promise.all(
+          activeAgent.skills.map(async (sid) => {
+            try {
+              const content = await loadSkillContent(
+                adminClient,
+                pageContext.org,
+                pageContext.site,
+                sid,
+              );
+              return content ? ([sid, content] as const) : null;
+            } catch {
+              return null;
+            }
+          }),
+        );
+        agentSkillContents = Object.fromEntries(entries.filter(Boolean) as [string, string][]);
+      }
+    } catch {
+      // Agent loading is best-effort
+    }
+  }
+
+  // Load explicitly requested skills (from slash commands)
+  if (requestedSkills && requestedSkills.length > 0) {
+    console.log('[da-agent] requestedSkills:', requestedSkills);
+    if (adminClient && pageContext) {
+      const entries = await Promise.all(
+        requestedSkills.map(async (sid) => {
+          if (agentSkillContents[sid]) return null;
+          try {
+            console.log(
+              `[da-agent] loading skill "${sid}" for ${pageContext.org}/${pageContext.site}`,
+            );
+            const content = await loadSkillContent(
+              adminClient,
+              pageContext.org,
+              pageContext.site,
+              sid,
+            );
+            console.log(
+              `[da-agent] skill "${sid}" loaded: ${content ? `${content.length} chars` : 'null'}`,
+            );
+            return content ? ([sid, content] as const) : null;
+          } catch (e) {
+            console.log(`[da-agent] skill "${sid}" error:`, e);
+            return null;
+          }
+        }),
+      );
+      const loaded = Object.fromEntries(entries.filter(Boolean) as [string, string][]);
+      agentSkillContents = { ...agentSkillContents, ...loaded };
+      console.log('[da-agent] agentSkillContents keys:', Object.keys(agentSkillContents));
+    } else {
+      console.log(
+        '[da-agent] cannot load skills: adminClient=',
+        !!adminClient,
+        'pageContext=',
+        !!pageContext,
+      );
+    }
+  }
+
+  // Connect to live MCP servers and register their tools
+  let mcpTools: Record<string, unknown> = {};
+  let mcpClients: MCPClient[] = [];
+  if (mcpConfig && Object.keys(mcpConfig.mcpServers).length > 0) {
+    try {
+      const mcpResult = await connectAndRegisterMCPTools(mcpConfig);
+      mcpTools = mcpResult.tools;
+      mcpClients = mcpResult.clients;
+    } catch {
+      // MCP connection failures don't block chat
+    }
+  }
 
   // Process any pending tool approvals before passing messages to streamText.
   // The AI SDK's needsApproval is designed for stateful sessions; since each request
   // creates a fresh streamText call, we resolve approvals here instead.
-  const processedMessages = await resolveApprovals(messages, tools);
+  const allTools = { ...canvasClientTools, ...daTools, ...edsTools, ...mcpTools };
+
+  const processedMessages = await resolveApprovals(messages, allTools);
   const withSelectionContext = expandUserSelectionContextForModel(
     stripClientOnlyToolInputs(processedMessages),
   );
@@ -434,19 +606,31 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   }));
   const modelMessages = expandLatestUserAttachmentsForModel(withSelectionContext, attachmentMeta);
 
+  const cleanupMCP = () => {
+    mcpClients.forEach((c) => {
+      try {
+        c.close();
+      } catch {
+        /* ignore */
+      }
+    });
+  };
+
   const result = streamText({
     model: bedrock('global.anthropic.claude-sonnet-4-6'),
     onError: (error) => {
       console.error('streamText error:', JSON.stringify(error));
       collab?.disconnect();
+      cleanupMCP();
     },
     onFinish: async () => {
       await flushTelemetry();
       collab?.disconnect();
+      cleanupMCP();
     },
-    system: buildSystemPrompt(pageContext, skills),
+    system: buildSystemPrompt(pageContext, mcpConfig, skillsIndex, activeAgent, agentSkillContents),
     messages: modelMessages as ModelMessage[],
-    tools,
+    tools: allTools,
     stopWhen: stepCountIs(5),
     experimental_telemetry: {
       isEnabled: true,
@@ -473,7 +657,54 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   });
 }
 
-function buildSystemPrompt(pageContext?: PageContext, skills: string[] = []): string {
+function buildMCPPromptSection(
+  mcpConfig?: { mcpServers: Record<string, MCPServerConfig>; toolAllowPatterns: string[] } | null,
+): string {
+  if (!mcpConfig || Object.keys(mcpConfig.mcpServers).length === 0) return '';
+  const serverLines = Object.keys(mcpConfig.mcpServers)
+    .map((id) => `- **${id}**: tools available as \`mcp__${id}__<toolName>\``)
+    .join('\n');
+  return `\n\n## Available MCP Servers\nThe following MCP servers have been discovered from the connected repository:\n${serverLines}\n\nTools from these servers follow the naming pattern \`mcp__<serverId>__<toolName>\`.`;
+}
+
+function buildSkillsPromptSection(skillsIndex?: SkillsIndex | null): string {
+  if (!skillsIndex || skillsIndex.skills.length === 0) return '';
+  const lines = skillsIndex.skills.map((s) => `- **${s.id}**: ${s.title}`).join('\n');
+  return `\n\n## Available Skills
+The following skills are available for this ${skillsIndex.source === 'org' ? 'organization' : 'site'}. Use the da_get_skill tool to read a skill's full instructions before applying it.
+${lines}
+
+Skills may reference MCP tools by name. When applying a skill, read its full content first, then follow its instructions.`;
+}
+
+function buildAgentPromptSection(
+  agent?: AgentPreset | null,
+  skillContents?: Record<string, string>,
+): string {
+  let section = '';
+  if (agent) {
+    section += `\n\n## Active Agent: ${agent.name}\n${agent.description}\n\n### Agent Instructions\n${agent.systemPrompt}`;
+  }
+  if (skillContents && Object.keys(skillContents).length > 0) {
+    section += '\n\n### Pre-loaded Skills';
+    for (const [id, content] of Object.entries(skillContents)) {
+      section += `\n\n#### Skill: ${id}\n${content}`;
+    }
+    section += "\n\nApply the above skill instructions whenever relevant to the user's request.";
+  }
+  return section;
+}
+
+function buildSystemPrompt(
+  pageContext?: PageContext,
+  mcpConfig?: { mcpServers: Record<string, MCPServerConfig>; toolAllowPatterns: string[] } | null,
+  skillsIndex?: SkillsIndex | null,
+  activeAgent?: AgentPreset | null,
+  agentSkillContents?: Record<string, string>,
+): string {
+  const mcpSection = buildMCPPromptSection(mcpConfig);
+  const skillsSection = buildSkillsPromptSection(skillsIndex);
+  const agentSection = buildAgentPromptSection(activeAgent, agentSkillContents);
   return `You are a helpful assistant for Document Authoring (DA) authoring platform.
 You help users with questions about DA features, content authoring, and best practices.
 Use the available tools to search documentation and provide accurate information.
@@ -491,6 +722,53 @@ CRITICAL INSTRUCTION - TOOL USAGE:
 - Good: "Done! The page now contains..."
 - Bad: "Here is the updated HTML: \`\`\`html <body>...</body> \`\`\`"
 - Good: (call the update tool directly, then confirm in plain prose)
+
+## Rich Response Formatting
+When presenting structured information in your responses (NOT in HTML content for tools), use these block syntaxes for richer display. Wrap content in triple-colon fences:
+
+**Lists** — bullet lists with visual styling:
+\`\`\`
+:::list
+- First item
+- Second item
+- Third item
+:::
+\`\`\`
+
+**Checklists** — visual check/cross markers:
+\`\`\`
+:::checklist
+- [x] Completed item
+- [ ] Pending item
+:::
+\`\`\`
+
+**Alerts** — info, warning, or error callouts:
+\`\`\`
+:::alert-info
+This is an informational note.
+:::
+
+:::alert-warning
+This needs attention.
+:::
+
+:::alert-error
+This is a critical issue.
+:::
+\`\`\`
+
+**Toggle lists** — expandable sections:
+\`\`\`
+:::toggle-list
+> Section title
+  Details that expand when clicked.
+> Another section
+  More details here.
+:::
+\`\`\`
+
+Use these blocks when they improve readability — for example, checklists for audits, alerts for important notes, toggle lists for detailed breakdowns. Do NOT overuse them for simple responses.
 
 ## EDS HTML Content Rules
 ALL content you create or update via tools MUST be valid Edge Delivery Services (EDS) semantic HTML. Follow these rules strictly:
@@ -583,14 +861,18 @@ The user is in the document editor. Apply these rules for EVERY message in this 
     : ''
 }`
     : ''
-}${
-  skills.length > 0
-    ? `
+}${mcpSection}${skillsSection}${agentSection}
 
-## Custom Skills
-The following skills define custom workflows configured for this site. When the user's request matches a skill, follow its instructions precisely:
+## Skill Suggestions
+When you notice the user repeatedly asking for the same type of task across messages (e.g., applying the same formatting rules, following the same checklist, using the same content pattern), proactively suggest creating a reusable skill.
 
-${skills.join('\n\n---\n\n')}`
-    : ''
-}`;
+Format your suggestion as:
+**[SKILL_SUGGESTION]** I noticed you frequently [describe the pattern]. Would you like me to save this as a reusable skill? I can create a skill called "[suggested-id]" that captures these instructions so they are automatically applied in future sessions.
+
+Only suggest a skill when:
+1. You have observed the same pattern at least 2-3 times in the conversation
+2. The pattern involves specific, repeatable instructions (not just general questions)
+3. No existing skill already covers the same pattern
+
+If the user agrees, use the da_create_skill tool to save the skill.`;
 }

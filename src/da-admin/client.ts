@@ -103,9 +103,7 @@ export class DAAdminClient {
       const contentType = response.headers.get('content-type');
 
       if (binary) {
-        const mimeType = (contentType || 'application/octet-stream')
-          .split(';')[0]
-          .trim();
+        const mimeType = (contentType || 'application/octet-stream').split(';')[0].trim();
         const arrayBuffer = await response.arrayBuffer();
         const bytes = new Uint8Array(arrayBuffer);
         let binaryStr = '';
@@ -142,11 +140,7 @@ export class DAAdminClient {
   /**
    * List sources and directories in a DA repository
    */
-  async listSources(
-    org: string,
-    repo: string,
-    path: string = '',
-  ): Promise<DAListSourcesResponse> {
+  async listSources(org: string, repo: string, path: string = ''): Promise<DAListSourcesResponse> {
     const endpoint = `/list/${org}/${repo}${path ? `/${path}` : ''}`;
     return this.request<DAListSourcesResponse>(endpoint);
   }
@@ -154,11 +148,7 @@ export class DAAdminClient {
   /**
    * Get source content
    */
-  async getSource(
-    org: string,
-    repo: string,
-    path: string,
-  ): Promise<DASourceContent> {
+  async getSource(org: string, repo: string, path: string): Promise<DASourceContent> {
     const endpoint = `/source/${org}/${repo}/${path}`;
     return this.request<DASourceContent>(endpoint);
   }
@@ -223,11 +213,7 @@ export class DAAdminClient {
   /**
    * Delete a source
    */
-  async deleteSource(
-    org: string,
-    repo: string,
-    path: string,
-  ): Promise<DAOperationResponse> {
+  async deleteSource(org: string, repo: string, path: string): Promise<DAOperationResponse> {
     const endpoint = `/source/${org}/${repo}/${path}`;
     return this.request<DAOperationResponse>(endpoint, {
       method: 'DELETE',
@@ -289,11 +275,7 @@ export class DAAdminClient {
   /**
    * Get version history for a source
    */
-  async getVersions(
-    org: string,
-    repo: string,
-    path: string,
-  ): Promise<DAVersionsResponse> {
+  async getVersions(org: string, repo: string, path: string): Promise<DAVersionsResponse> {
     const endpoint = `/versionlist/${org}/${repo}/${path}`;
     return this.request<DAVersionsResponse>(endpoint);
   }
@@ -301,11 +283,7 @@ export class DAAdminClient {
   /**
    * Lookup media — returns binary content as base64 with MIME type
    */
-  async lookupMedia(
-    org: string,
-    repo: string,
-    mediaPath: string,
-  ): Promise<DAMediaContent> {
+  async lookupMedia(org: string, repo: string, mediaPath: string): Promise<DAMediaContent> {
     const endpoint = `/source/${org}/${repo}/${mediaPath}`;
     return this.request<DAMediaContent>(endpoint, { binary: true });
   }
@@ -313,11 +291,7 @@ export class DAAdminClient {
   /**
    * Lookup fragment references
    */
-  async lookupFragment(
-    org: string,
-    repo: string,
-    fragmentPath: string,
-  ): Promise<DAMediaReference> {
+  async lookupFragment(org: string, repo: string, fragmentPath: string): Promise<DAMediaReference> {
     const endpoint = `/fragment/${org}/${repo}/${fragmentPath}`;
     return this.request<DAMediaReference>(endpoint);
   }

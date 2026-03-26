@@ -4,11 +4,7 @@
  * Uses direct fetch() — no Cloudflare service binding.
  */
 
-import type {
-  EDSAdminClientOptions,
-  EDSAPIError,
-  EDSOperationResult,
-} from './types';
+import type { EDSAdminClientOptions, EDSAPIError, EDSOperationResult } from './types';
 
 export class EDSAdminClient {
   private apiToken: string;
@@ -36,7 +32,11 @@ export class EDSAdminClient {
     return headers;
   }
 
-  private async request(method: 'POST' | 'DELETE', endpoint: string, includeContentSource = true): Promise<Response> {
+  private async request(
+    method: 'POST' | 'DELETE',
+    endpoint: string,
+    includeContentSource = true,
+  ): Promise<Response> {
     const url = `https://admin.hlx.page${endpoint}`;
     const headers = this.authHeaders(includeContentSource);
     console.log(`EDS Admin API Call: ${method} ${url}`);
@@ -54,7 +54,12 @@ export class EDSAdminClient {
       clearTimeout(timeoutId);
 
       const duration = Date.now() - startTime;
-      console.log('EDS Admin API Response:', response.status, response.statusText, `(${duration}ms)`);
+      console.log(
+        'EDS Admin API Response:',
+        response.status,
+        response.statusText,
+        `(${duration}ms)`,
+      );
 
       return response;
     } catch (err) {
@@ -113,7 +118,11 @@ export class EDSAdminClient {
    */
   async unpreview(owner: string, repo: string, path: string): Promise<EDSOperationResult> {
     const normPath = this.normalisePath(path);
-    const response = await this.request('DELETE', `/preview/${owner}/${repo}/main/${normPath}`, false);
+    const response = await this.request(
+      'DELETE',
+      `/preview/${owner}/${repo}/main/${normPath}`,
+      false,
+    );
     return this.parseResponse(response, 'preview');
   }
 
