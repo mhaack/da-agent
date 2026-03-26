@@ -1,6 +1,6 @@
 # DA Agent
 
-[![68% Vibe_Coded](https://img.shields.io/badge/68%25-Vibe_Coded-ff69b4?style=for-the-badge&logo=claude&logoColor=white)](https://github.com/ai-ecoverse/vibe-coded-badge-action)
+[![67% Vibe_Coded](https://img.shields.io/badge/67%25-Vibe_Coded-ff69b4?style=for-the-badge&logo=claude&logoColor=white)](https://github.com/ai-ecoverse/vibe-coded-badge-action)
 
 An AI assistant Cloudflare Worker for the [Document Authoring (DA)](https://da.live) platform. It exposes a streaming chat API backed by Claude on Amazon Bedrock and integrates directly with the DA Admin API to read, create, update, and manage content.
 
