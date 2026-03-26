@@ -3,7 +3,8 @@
  * that can be merged with DA's built-in tools.
  */
 
-import { tool, jsonSchema } from 'ai';
+import { tool } from 'ai';
+import { z, type ZodTypeAny } from 'zod';
 import { MCPClient } from './client.js';
 import type { MCPToolDefinition } from './client.js';
 import type { MCPServerConfig, RemoteMCPServerConfig } from './types.js';
@@ -14,26 +15,65 @@ function getServerUrl(cfg: MCPServerConfig): string | null {
   return null;
 }
 
+/**
+ * Convert a single JSON Schema property definition to a Zod type.
+ * Handles the common scalar types returned by MCP servers.
+ */
+function jsonPropToZod(prop: Record<string, unknown>, required: boolean): ZodTypeAny {
+  let base: ZodTypeAny;
+  const type = prop.type as string | undefined;
+
+  if (type === 'number' || type === 'integer') {
+    base = z.number();
+  } else if (type === 'boolean') {
+    base = z.boolean();
+  } else if (type === 'array') {
+    base = z.array(z.unknown());
+  } else if (type === 'object') {
+    base = z.record(z.unknown());
+  } else {
+    base = z.string();
+  }
+
+  if (prop.description) {
+    base = base.describe(prop.description as string);
+  }
+
+  return required ? base : base.optional();
+}
+
+/**
+ * Convert an MCP JSON Schema inputSchema to a Zod object schema.
+ * Using real Zod ensures the Bedrock provider (AI SDK v6) handles it correctly.
+ * The jsonSchema() helper uses a different serialisation path that Bedrock rejects.
+ */
+function mcpSchemaToZod(inputSchema: Record<string, unknown> | undefined): ZodTypeAny {
+  const properties = (inputSchema?.properties as Record<string, Record<string, unknown>>) ?? {};
+  const requiredFields = Array.isArray(inputSchema?.required)
+    ? (inputSchema.required as string[])
+    : [];
+  const required = new Set(requiredFields);
+
+  const shape: Record<string, ZodTypeAny> = {};
+  for (const [key, prop] of Object.entries(properties)) {
+    shape[key] = jsonPropToZod(prop, required.has(key));
+  }
+
+  return z.object(shape);
+}
+
 function mcpToolToAITool(serverId: string, mcpTool: MCPToolDefinition, mcpClient: MCPClient) {
   const toolName = `mcp__${serverId}__${mcpTool.name}`;
   const description = mcpTool.description ?? `MCP tool ${mcpTool.name} from server ${serverId}`;
 
-  const inputSchema = mcpTool.inputSchema as Record<string, unknown> | undefined;
-  // Bedrock requires type:"object" at the root of every tool input schema.
-  // The MCP SDK sometimes omits it, so we always ensure it is set.
-  let schemaObj: Record<string, unknown>;
-  if (inputSchema && Object.keys(inputSchema).length > 0) {
-    schemaObj = inputSchema.type ? inputSchema : { type: 'object', ...inputSchema };
-  } else {
-    schemaObj = { type: 'object', properties: {} };
-  }
-  const schema = jsonSchema(schemaObj);
+  // Convert MCP JSON Schema to real Zod — the only path Bedrock handles reliably.
+  const inputSchema = mcpSchemaToZod(mcpTool.inputSchema as Record<string, unknown> | undefined);
 
   return {
     name: toolName,
     tool: tool({
       description,
-      parameters: schema,
+      inputSchema,
       execute: async (args: Record<string, unknown>) => {
         try {
           const result = await mcpClient.callTool(mcpTool.name, args);
