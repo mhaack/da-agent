@@ -20,10 +20,10 @@ function mcpToolToAITool(serverId: string, mcpTool: MCPToolDefinition, mcpClient
 
   const inputSchema = mcpTool.inputSchema as Record<string, unknown> | undefined;
   // Bedrock requires type:"object" at the root of every tool input schema.
-  // The MCP SDK sometimes omits it, so we always ensure it is set.
+  // Always force it — the MCP SDK sometimes omits it or sets it incorrectly.
   let schemaObj: Record<string, unknown>;
   if (inputSchema && Object.keys(inputSchema).length > 0) {
-    schemaObj = inputSchema.type ? inputSchema : { type: 'object', ...inputSchema };
+    schemaObj = { ...inputSchema, type: 'object' };
   } else {
     schemaObj = { type: 'object', properties: {} };
   }
