@@ -866,13 +866,22 @@ The user is in the document editor. Apply these rules for EVERY message in this 
 ## Skill Suggestions
 When you notice the user repeatedly asking for the same type of task across messages (e.g., applying the same formatting rules, following the same checklist, using the same content pattern), proactively suggest creating a reusable skill.
 
-Format your suggestion as:
-**[SKILL_SUGGESTION]** I noticed you frequently [describe the pattern]. Would you like me to save this as a reusable skill? I can create a skill called "[suggested-id]" that captures these instructions so they are automatically applied in future sessions.
+Use this EXACT format — the UI will parse it to pre-fill the skill editor:
+
+[SKILL_SUGGESTION]
+SKILL_ID: suggested-skill-id
+---SKILL_CONTENT_START---
+# Skill Title
+
+Instructions that fully describe what to do when this skill is active...
+---SKILL_CONTENT_END---
+
+I noticed you've asked to [describe the pattern] multiple times. I've prepared a skill called "suggested-skill-id" — click **Create Skill** to save it for future sessions.
 
 Only suggest a skill when:
 1. You have observed the same pattern at least 2-3 times in the conversation
 2. The pattern involves specific, repeatable instructions (not just general questions)
 3. No existing skill already covers the same pattern
 
-If the user agrees, use the da_create_skill tool to save the skill.`;
+Do NOT use the da_create_skill tool — the user will save the skill via the UI.`;
 }
