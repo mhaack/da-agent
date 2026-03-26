@@ -1,3 +1,10 @@
+# [1.9.0](https://github.com/adobe-rnd/da-agent/compare/v1.8.1...v1.9.0) (2026-03-26)
+
+
+### Features
+
+* skills Lab -- MCP client, agent presets, skills loader, and skill suggestions ([#4](https://github.com/adobe-rnd/da-agent/issues/4)) ([a2ae192](https://github.com/adobe-rnd/da-agent/commit/a2ae1921657e08c5ab133d56b8c4695e2e0f5087))
+
 ## [1.8.1](https://github.com/adobe-rnd/da-agent/compare/v1.8.0...v1.8.1) (2026-03-26)
 
 
