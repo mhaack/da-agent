@@ -648,7 +648,7 @@ export class CollabClient {
               ytext.insert(offsetCopy, chunkCopy);
             });
             offset += chunk.length;
-            await CollabClient.sleep(10);
+            await CollabClient.sleep(20);
           }
           /* eslint-enable no-await-in-loop */
 
@@ -696,7 +696,16 @@ export class CollabClient {
 
     if (!ytextResult) {
       // Fallback: apply via DOM + aem2doc (handles cross-node spans)
-      dbg('applyReplaceTextWithTyping: falling back to DOM+aem2doc');
+      // Still animate: cursor at block → instant delete via aem2doc → retype word-by-word
+      dbg('applyReplaceTextWithTyping: falling back to DOM+aem2doc with animation');
+
+      // Step 1: Move cursor to the block containing the find text (visual cue)
+      const preBlockIdx = this.findFragmentChildIndex(find);
+      if (preBlockIdx >= 0) {
+        this.setCursorAtElement(preBlockIdx);
+        await CollabClient.sleep(500);
+      }
+
       let domResult: ReturnType<typeof applyOperation>;
       try {
         domResult = applyOperation(currentHtml, {
@@ -706,24 +715,65 @@ export class CollabClient {
         dbg('applyReplaceTextWithTyping: applyOperation THREW:', String(domErr));
         return { success: false, newHtml: currentHtml, message: String(domErr) };
       }
-      if (domResult.success) {
-        this.ydoc.transact(() => {
-          const frag = this.ydoc!.getXmlFragment('prosemirror');
-          frag.delete(0, frag.length);
-          this.ydoc!.share.forEach((type) => {
-            if (type instanceof Y.Map) type.clear();
-          });
-          aem2doc(domResult.newHtml, this.ydoc!);
-        });
-        if (domResult.blockIndex >= 0) this.setCursorAtElement(domResult.blockIndex);
-        const preview = this.getContent()?.slice(0, 200);
-        dbg(`applyReplaceTextWithTyping: aem2doc fallback done, getContent()="${preview}"`);
-      } else {
-        dbg('applyReplaceTextWithTyping: DOM op also failed:', domResult.message);
+      if (!domResult.success) {
+        dbg('applyReplaceTextWithTyping: DOM op failed:', domResult.message);
+        return { success: false, newHtml: currentHtml, message: domResult.message };
       }
+
+      // Step 2: Apply aem2doc so new content appears (collaborators see change)
+      this.ydoc.transact(() => {
+        const frag = this.ydoc!.getXmlFragment('prosemirror');
+        frag.delete(0, frag.length);
+        this.ydoc!.share.forEach((type) => {
+          if (type instanceof Y.Map) type.clear();
+        });
+        aem2doc(domResult.newHtml, this.ydoc!);
+      });
+
+      // Step 3: Find the replace text in the freshly rebuilt fragment and retype it word-by-word
+      if (replace.trim()) {
+        const newYtextResult = this.findYXmlText(replace, nth);
+        if (newYtextResult) {
+          const { ytext: newYtext, charOffset: newCharOffset } = newYtextResult;
+          // Delete the already-inserted replacement text (it disappears)
+          this.ydoc.transact(() => {
+            newYtext.delete(newCharOffset, replace.length);
+          });
+          // Position cursor at the now-empty spot
+          const postBlockIdx = this.findFragmentChildIndex(
+            newYtext.toDelta().map((d: any) => d.insert as string).join('').slice(0, 30),
+          );
+          if (postBlockIdx >= 0) this.setCursorAtElement(postBlockIdx);
+          await CollabClient.sleep(38);
+          // Retype word-by-word
+          const words = replace.split(' ');
+          let offset = newCharOffset;
+          /* eslint-disable no-await-in-loop */
+          for (let i = 0; i < words.length; i += 1) {
+            const chunk = i < words.length - 1 ? `${words[i]} ` : words[i];
+            const chunkCopy = chunk;
+            const offsetCopy = offset;
+            this.ydoc.transact(() => {
+              newYtext.insert(offsetCopy, chunkCopy);
+            });
+            offset += chunk.length;
+            await CollabClient.sleep(20);
+          }
+          /* eslint-enable no-await-in-loop */
+          dbg(`applyReplaceTextWithTyping: fallback retyped ${words.length} words`);
+        } else {
+          // Can't find replace text (complex formatting) — just set cursor at block
+          const postBlockIdx = this.findFragmentChildIndex(replace.slice(0, 30));
+          if (postBlockIdx >= 0) this.setCursorAtElement(postBlockIdx);
+          dbg('applyReplaceTextWithTyping: fallback could not find replace text for retyping');
+        }
+      }
+
+      const preview = this.getContent()?.slice(0, 200);
+      dbg(`applyReplaceTextWithTyping: aem2doc fallback done, getContent()="${preview}"`);
       return {
-        success: domResult.success,
-        newHtml: domResult.success ? (this.getContent() ?? domResult.newHtml) : domResult.newHtml,
+        success: true,
+        newHtml: this.getContent() ?? domResult.newHtml,
         message: domResult.message,
       };
     }
@@ -764,7 +814,7 @@ export class CollabClient {
       // Step 2: Extend selection to cover the full old text
       this.setCursorAtPmPosition(fromPm, toPm, mapping, type);
       dbg(`applyReplaceTextWithTyping: selection set from ${fromPm} to ${toPm}, sleeping 175ms`);
-      await CollabClient.sleep(88);
+      await CollabClient.sleep(500);
     }
 
     // Step 3: Delete old text in one transaction (collaborators see it disappear)
@@ -795,7 +845,7 @@ export class CollabClient {
         ytext.insert(offsetCopy, chunkCopy);
       });
       replaceOffset += chunk.length;
-      await CollabClient.sleep(10);
+      await CollabClient.sleep(20);
     }
     /* eslint-enable no-await-in-loop */
 
