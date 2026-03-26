@@ -66,13 +66,13 @@ function mcpToolToAITool(serverId: string, mcpTool: MCPToolDefinition, mcpClient
   const description = mcpTool.description ?? `MCP tool ${mcpTool.name} from server ${serverId}`;
 
   // Convert MCP JSON Schema to real Zod — the only path Bedrock handles reliably.
-  const parameters = mcpSchemaToZod(mcpTool.inputSchema as Record<string, unknown> | undefined);
+  const inputSchema = mcpSchemaToZod(mcpTool.inputSchema as Record<string, unknown> | undefined);
 
   return {
     name: toolName,
     tool: tool({
       description,
-      parameters,
+      inputSchema,
       execute: async (args: Record<string, unknown>) => {
         try {
           const result = await mcpClient.callTool(mcpTool.name, args);
