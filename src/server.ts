@@ -346,6 +346,17 @@ function expandLatestUserAttachmentsForModel(messages: any[], attachmentMeta: Ar
   });
 }
 
+function extractImsUserId(token: string | undefined): string | undefined {
+  if (!token) return undefined;
+  try {
+    const payload = token.split('.')[1];
+    const decoded = JSON.parse(atob(payload));
+    return decoded.user_id ?? decoded.sub ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function handleChat(request: Request, env: Env): Promise<Response> {
   initTelemetry(env);
 
@@ -441,6 +452,7 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
       isEnabled: true,
       functionId: 'da-agent-chat',
       metadata: {
+        userId: extractImsUserId(imsToken) ?? 'unknown',
         org: pageContext?.org ?? 'unknown',
         site: pageContext?.site ?? 'unknown',
         path: pageContext?.path ?? 'unknown',
