@@ -14,6 +14,12 @@ import { loadAgentPreset } from './agents/loader.js';
 import type { AgentPreset } from './agents/loader.js';
 import { connectAndRegisterMCPTools } from './mcp/tool-adapter.js';
 import { MCPClient } from './mcp/client.js';
+import {
+  detectSessionUserPattern,
+  formatSessionPatternForPrompt,
+  trailingAssistantAlreadySuggestedSkill,
+  type SessionUserPattern,
+} from './user-message-pattern.js';
 
 const CORS_HEADERS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
@@ -595,9 +601,12 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   const allTools = { ...canvasClientTools, ...daTools, ...edsTools, ...mcpTools };
 
   const processedMessages = await resolveApprovals(messages, allTools);
-  const withSelectionContext = expandUserSelectionContextForModel(
-    stripClientOnlyToolInputs(processedMessages),
-  );
+  const strippedForModel = stripClientOnlyToolInputs(processedMessages);
+  let sessionPattern: SessionUserPattern | null = null;
+  if (!trailingAssistantAlreadySuggestedSkill(strippedForModel)) {
+    sessionPattern = detectSessionUserPattern(strippedForModel);
+  }
+  const withSelectionContext = expandUserSelectionContextForModel(strippedForModel);
   const attachmentMeta = attachments.map((a) => ({
     id: a.id,
     fileName: a.fileName,
@@ -628,7 +637,14 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
       collab?.disconnect();
       cleanupMCP();
     },
-    system: buildSystemPrompt(pageContext, mcpConfig, skillsIndex, activeAgent, agentSkillContents),
+    system: buildSystemPrompt(
+      pageContext,
+      mcpConfig,
+      skillsIndex,
+      activeAgent,
+      agentSkillContents,
+      sessionPattern,
+    ),
     messages: modelMessages as ModelMessage[],
     tools: allTools,
     stopWhen: stepCountIs(5),
@@ -701,6 +717,7 @@ function buildSystemPrompt(
   skillsIndex?: SkillsIndex | null,
   activeAgent?: AgentPreset | null,
   agentSkillContents?: Record<string, string>,
+  sessionPattern?: SessionUserPattern | null,
 ): string {
   const mcpSection = buildMCPPromptSection(mcpConfig);
   const skillsSection = buildSkillsPromptSection(skillsIndex);
@@ -864,7 +881,9 @@ The user is in the document editor. Apply these rules for EVERY message in this 
 }${mcpSection}${skillsSection}${agentSection}
 
 ## Skill Suggestions
-When you notice the user repeatedly asking for the same type of task across messages (e.g., applying the same formatting rules, following the same checklist, using the same content pattern), proactively suggest creating a reusable skill.
+The server may append **Session pattern detected** when it automatically finds several similar user messages in this thread (any topic — not a fixed list). When that section is present, you MUST output the \`[SKILL_SUGGESTION]\` block in the same reply.
+
+When there is no server pattern block, you may still suggest a skill on your own if you notice repeated, specific instructions across messages and no existing skill covers them.
 
 Use this EXACT format — the UI will parse it to pre-fill the skill editor:
 
@@ -878,10 +897,7 @@ Instructions that fully describe what to do when this skill is active...
 
 I noticed you've asked to [describe the pattern] multiple times. I've prepared a skill called "suggested-skill-id" — click **Create Skill** to save it for future sessions.
 
-Only suggest a skill when:
-1. You have observed the same pattern at least 2-3 times in the conversation
-2. The pattern involves specific, repeatable instructions (not just general questions)
-3. No existing skill already covers the same pattern
-
-Do NOT use the da_create_skill tool — the user will save the skill via the UI.`;
+Do NOT use the da_create_skill tool — the user will save the skill via the UI.${
+    sessionPattern ? formatSessionPatternForPrompt(sessionPattern) : ''
+  }`;
 }
