@@ -15,6 +15,7 @@ import type { AgentPreset } from '../agents/loader';
 import { ensureHtmlExtension } from './utils';
 import type { EDSAdminClient } from '../eds-admin/client';
 import type { EDSOperationResult, EDSPublishResult, EDSToolError } from '../eds-admin/types';
+import { saveProjectMemory, updateRecentPages } from '../memory/loader.js';
 
 function isAPIError(e: unknown): e is DAAPIError {
   return typeof e === 'object' && e !== null && 'status' in e && 'message' in e;
@@ -514,6 +515,51 @@ export function createDATools(
           const result = await saveAgentPreset(client, ctxOrg, ctxRepo, agentId, preset);
           if (!result.success) return { error: result.error };
           return { agentId, saved: true };
+        } catch (e) {
+          return { error: String(e) };
+        }
+      },
+    });
+
+    tools.write_project_memory = tool({
+      description:
+        'Write or update the long-lived project memory for this site. ' +
+        'Call this when you discover significant information about the site — its purpose, ' +
+        'main sections, URL structure, templates, or content conventions. ' +
+        'Pass the full updated markdown content each time.',
+      inputSchema: z.object({
+        content: z.string().describe('Full markdown content to write to the project memory file.'),
+      }),
+      execute: async ({ content }) => {
+        if (!ctxOrg || !ctxRepo) return { error: 'No org/site context available' };
+        try {
+          const result = await saveProjectMemory(client, ctxOrg, ctxRepo, content);
+          if (!result.success) return { error: result.error };
+          return { saved: true };
+        } catch (e) {
+          return { error: String(e) };
+        }
+      },
+    });
+
+    tools.update_recent_pages = tool({
+      description:
+        'Record that a page was changed or processed in this session. ' +
+        "Call this once per page after every tool call that modifies a page's content. " +
+        'If multiple pages were modified in one response, call once for each page.',
+      inputSchema: z.object({
+        org: z.string().describe('Organization identifier'),
+        site: z.string().describe('Site/repo identifier'),
+        path: z.string().describe('Page path (e.g. "/en/blog/post.html")'),
+        summary: z
+          .string()
+          .describe('One short sentence describing what changed or was done on this page.'),
+      }),
+      execute: async ({ org, site, path, summary }) => {
+        try {
+          const result = await updateRecentPages(client, org, site, { org, site, path, summary });
+          if (!result.success) return { error: result.error };
+          return { recorded: true };
         } catch (e) {
           return { error: String(e) };
         }
