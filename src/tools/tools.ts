@@ -25,7 +25,7 @@ function recordPageChange(
   summary: string,
 ): void {
   // Fire-and-forget: record page modification without blocking the tool response
-  updateRecentPages(client, org, site, { org, site, path, summary }).catch(() => {});
+  updateRecentPages(client, org, site, { path, summary }).catch(() => {});
 }
 
 function isAPIError(e: unknown): e is DAAPIError {

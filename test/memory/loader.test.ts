@@ -88,8 +88,6 @@ describe('updateRecentPages', () => {
     } as unknown as DAAdminClient;
 
     await updateRecentPages(client, 'org', 'mysite', {
-      org: 'org',
-      site: 'mysite',
       path: '/en/index.html',
       summary: 'Updated hero',
     });
@@ -98,20 +96,12 @@ describe('updateRecentPages', () => {
     expect(pages).toHaveLength(1);
     expect(pages[0].path).toBe('/en/index.html');
     expect(pages[0].summary).toBe('Updated hero');
-    expect(pages[0].org).toBe('org');
-    expect(pages[0].site).toBe('mysite');
     expect(pages[0].date).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
-  it('prepends new entry to existing list', async () => {
+  it('prepends new entry to existing list (string JSON)', async () => {
     const existing = JSON.stringify([
-      {
-        org: 'org',
-        site: 'mysite',
-        path: '/en/about.html',
-        date: '2026-01-01T00:00:00.000Z',
-        summary: 'Old entry',
-      },
+      { path: '/en/about.html', date: '2026-01-01T00:00:00.000Z', summary: 'Old entry' },
     ]);
     let saved: string | undefined;
     const client = {
@@ -123,8 +113,30 @@ describe('updateRecentPages', () => {
     } as unknown as DAAdminClient;
 
     await updateRecentPages(client, 'org', 'mysite', {
-      org: 'org',
-      site: 'mysite',
+      path: '/en/index.html',
+      summary: 'Updated hero',
+    });
+
+    const pages = JSON.parse(saved!);
+    expect(pages).toHaveLength(2);
+    expect(pages[0].path).toBe('/en/index.html');
+    expect(pages[1].path).toBe('/en/about.html');
+  });
+
+  it('prepends new entry to existing list (pre-parsed array from DA client)', async () => {
+    const existing = [
+      { path: '/en/about.html', date: '2026-01-01T00:00:00.000Z', summary: 'Old entry' },
+    ];
+    let saved: string | undefined;
+    const client = {
+      getSource: async () => existing,
+      createSource: async (_o: string, _r: string, _p: string, content: string) => {
+        saved = content;
+        return { success: true };
+      },
+    } as unknown as DAAdminClient;
+
+    await updateRecentPages(client, 'org', 'mysite', {
       path: '/en/index.html',
       summary: 'Updated hero',
     });
@@ -137,20 +149,8 @@ describe('updateRecentPages', () => {
 
   it('deduplicates: existing entry for same path moves to front with new summary', async () => {
     const existing = JSON.stringify([
-      {
-        org: 'org',
-        site: 'mysite',
-        path: '/en/index.html',
-        date: '2026-01-01T00:00:00.000Z',
-        summary: 'First edit',
-      },
-      {
-        org: 'org',
-        site: 'mysite',
-        path: '/en/about.html',
-        date: '2026-01-01T00:00:00.000Z',
-        summary: 'Old entry',
-      },
+      { path: '/en/index.html', date: '2026-01-01T00:00:00.000Z', summary: 'First edit' },
+      { path: '/en/about.html', date: '2026-01-01T00:00:00.000Z', summary: 'Old entry' },
     ]);
     let saved: string | undefined;
     const client = {
@@ -162,8 +162,6 @@ describe('updateRecentPages', () => {
     } as unknown as DAAdminClient;
 
     await updateRecentPages(client, 'org', 'mysite', {
-      org: 'org',
-      site: 'mysite',
       path: '/en/index.html',
       summary: 'Second edit',
     });
@@ -177,8 +175,6 @@ describe('updateRecentPages', () => {
 
   it('trims list to max 10 entries, dropping oldest', async () => {
     const existing = Array.from({ length: 10 }, (_, i) => ({
-      org: 'org',
-      site: 'mysite',
       path: `/en/page-${i}.html`,
       date: '2026-01-01T00:00:00.000Z',
       summary: `Page ${i}`,
@@ -193,8 +189,6 @@ describe('updateRecentPages', () => {
     } as unknown as DAAdminClient;
 
     await updateRecentPages(client, 'org', 'mysite', {
-      org: 'org',
-      site: 'mysite',
       path: '/en/new.html',
       summary: 'Brand new',
     });
@@ -216,8 +210,6 @@ describe('updateRecentPages', () => {
     } as unknown as DAAdminClient;
 
     const result = await updateRecentPages(client, 'org', 'mysite', {
-      org: 'org',
-      site: 'mysite',
       path: '/en/index.html',
       summary: 'Test',
     });

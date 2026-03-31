@@ -5,8 +5,6 @@ const RECENT_PAGES_PATH = '.da/agent/recent-pages.json';
 const MAX_RECENT_PAGES = 10;
 
 export interface RecentPage {
-  org: string;
-  site: string;
   path: string;
   date: string;
   summary: string;
@@ -52,27 +50,29 @@ export async function updateRecentPages(
   client: DAAdminClient,
   org: string,
   site: string,
-  entry: Omit<RecentPage, 'date'> & { date?: string },
+  entry: { path: string; summary: string; date?: string },
 ): Promise<{ success: boolean; error?: string }> {
   let pages: RecentPage[] = [];
-  let rawBody = '';
   try {
     const raw = await client.getSource(org, site, RECENT_PAGES_PATH);
-    rawBody = extractContent(raw);
+    if (Array.isArray(raw)) {
+      // DA client already parsed the JSON response (application/json content-type)
+      pages = raw as RecentPage[];
+    } else {
+      const body = extractContent(raw);
+      if (body) {
+        try {
+          pages = JSON.parse(body) as RecentPage[];
+        } catch {
+          // corrupt JSON — start fresh
+        }
+      }
+    }
   } catch {
     // no existing file — start fresh
   }
-  if (rawBody) {
-    try {
-      pages = JSON.parse(rawBody) as RecentPage[];
-    } catch {
-      // corrupt JSON — start fresh
-    }
-  }
 
   const newEntry: RecentPage = {
-    org: entry.org,
-    site: entry.site,
     path: entry.path,
     date: entry.date ?? new Date().toISOString(),
     summary: entry.summary,
