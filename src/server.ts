@@ -891,13 +891,11 @@ Use this context to better understand the site before taking any actions.
     pageContext
       ? `
 ## Memory Instructions
-When you discover significant information about this site — its purpose, main sections, URL structure, templates, or content conventions — call write_project_memory with the full updated markdown content.
-Do this proactively the first time you encounter a new site, or when you learn something durable that would help future sessions understand it better.
-Do NOT update it for routine content edits.
-
-## Recent Pages
-After every tool call that modifies a page's content, call update_recent_pages with the path and a single sentence summarising what changed.
-Call it once per page per response — if you modified multiple pages, call it once for each.
+At the end of every response where you have learned something about this site, you MUST call write_project_memory to persist what you know.
+This includes: answering questions about the site structure, listing pages, reading content to understand the site, or any interaction that reveals the site's purpose, main sections, URL patterns, templates, or content conventions.
+Always write the full updated markdown — include everything you know, not just what changed.
+IMPORTANT: Writing about what you learned in your text response does NOT save it. Only an actual write_project_memory tool call saves to memory. Never say "I've saved this" or "I'll remember this" without calling the tool.
+Do NOT call it for pure content edits where you learned nothing new about the site's structure.
 `
       : ''
   }${mcpSection}${skillsSection}${agentSection}

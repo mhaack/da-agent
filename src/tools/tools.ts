@@ -17,6 +17,17 @@ import type { EDSAdminClient } from '../eds-admin/client';
 import type { EDSOperationResult, EDSPublishResult, EDSToolError } from '../eds-admin/types';
 import { saveProjectMemory, updateRecentPages } from '../memory/loader.js';
 
+function recordPageChange(
+  client: DAAdminClient,
+  org: string,
+  site: string,
+  path: string,
+  summary: string,
+): void {
+  // Fire-and-forget: record page modification without blocking the tool response
+  updateRecentPages(client, org, site, { org, site, path, summary }).catch(() => {});
+}
+
 function isAPIError(e: unknown): e is DAAPIError {
   return typeof e === 'object' && e !== null && 'status' in e && 'message' in e;
 }
@@ -136,14 +147,11 @@ export function createDATools(
       }),
       needsApproval: async () => true,
       execute: async ({ org, repo, path, content, contentType }) => {
+        const pathWithExt = ensureHtmlExtension(path);
         try {
-          return await client.createSource(
-            org,
-            repo,
-            ensureHtmlExtension(path),
-            content,
-            contentType,
-          );
+          const result = await client.createSource(org, repo, pathWithExt, content, contentType);
+          recordPageChange(client, org, repo, pathWithExt, 'Created new page');
+          return result;
         } catch (e) {
           if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
@@ -175,7 +183,7 @@ export function createDATools(
         contentType: z.string().optional().describe('Optional content type'),
       }),
       needsApproval: async () => true,
-      execute: async ({ org, repo, path, content, contentType }) => {
+      execute: async ({ org, repo, path, content, contentType, humanReadableSummary }) => {
         const pathWithExt = ensureHtmlExtension(path);
         try {
           if (useCollabForDoc(org, repo, path, opts) && opts?.collab) {
@@ -184,9 +192,12 @@ export function createDATools(
               initiator: 'collab',
             });
             opts.collab.disconnect();
+            recordPageChange(client, org, repo, pathWithExt, humanReadableSummary);
             return { path: pathWithExt, source: 'collab', updated: true };
           }
-          return await client.updateSource(org, repo, pathWithExt, content, contentType);
+          const result = await client.updateSource(org, repo, pathWithExt, content, contentType);
+          recordPageChange(client, org, repo, pathWithExt, humanReadableSummary);
+          return result;
         } catch (e) {
           if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
@@ -223,13 +234,16 @@ export function createDATools(
         destinationPath: z.string().describe('Path where the file should be copied to'),
       }),
       execute: async ({ org, repo, sourcePath, destinationPath }) => {
+        const destWithExt = ensureHtmlExtension(destinationPath);
         try {
-          return await client.copyContent(
+          const result = await client.copyContent(
             org,
             repo,
             ensureHtmlExtension(sourcePath),
-            ensureHtmlExtension(destinationPath),
+            destWithExt,
           );
+          recordPageChange(client, org, repo, destWithExt, `Copied from ${sourcePath}`);
+          return result;
         } catch (e) {
           if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
@@ -248,13 +262,16 @@ export function createDATools(
       }),
       needsApproval: async () => true,
       execute: async ({ org, repo, sourcePath, destinationPath }) => {
+        const destWithExt = ensureHtmlExtension(destinationPath);
         try {
-          return await client.moveContent(
+          const result = await client.moveContent(
             org,
             repo,
             ensureHtmlExtension(sourcePath),
-            ensureHtmlExtension(destinationPath),
+            destWithExt,
           );
+          recordPageChange(client, org, repo, destWithExt, `Moved from ${sourcePath}`);
+          return result;
         } catch (e) {
           if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
@@ -540,34 +557,6 @@ export function createDATools(
           const result = await saveProjectMemory(client, ctxOrg, ctxRepo, content);
           if (!result.success) return { error: result.error };
           return { saved: true };
-        } catch (e) {
-          return { error: String(e) };
-        }
-      },
-    });
-
-    tools.update_recent_pages = tool({
-      description:
-        'Record that a page was modified in this session. ' +
-        "Call this once per page after every tool call that modifies a page's content. " +
-        'If multiple pages were modified in one response, call once for each page.',
-      inputSchema: z.object({
-        path: z.string().describe('Page path (e.g. "/en/blog/post.html")'),
-        summary: z
-          .string()
-          .describe('One short sentence describing what was modified on this page.'),
-      }),
-      execute: async ({ path, summary }) => {
-        if (!ctxOrg || !ctxRepo) return { error: 'No org/site context available' };
-        try {
-          const result = await updateRecentPages(client, ctxOrg, ctxRepo, {
-            org: ctxOrg,
-            site: ctxRepo,
-            path,
-            summary,
-          });
-          if (!result.success) return { error: result.error };
-          return { recorded: true };
         } catch (e) {
           return { error: String(e) };
         }
