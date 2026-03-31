@@ -225,4 +225,26 @@ describe('updateRecentPages', () => {
     expect(result.success).toBe(false);
     expect(result.error).toContain('Write failed');
   });
+
+  it('starts fresh when existing JSON is corrupt', async () => {
+    let saved: string | undefined;
+    const client = {
+      getSource: async () => 'not-valid-json{{{',
+      createSource: async (_o: string, _r: string, _p: string, content: string) => {
+        saved = content;
+        return { success: true };
+      },
+    } as unknown as DAAdminClient;
+
+    await updateRecentPages(client, 'org', 'mysite', {
+      org: 'org',
+      site: 'mysite',
+      path: '/en/index.html',
+      summary: 'Test',
+    });
+
+    const pages = JSON.parse(saved!);
+    expect(pages).toHaveLength(1);
+    expect(pages[0].path).toBe('/en/index.html');
+  });
 });

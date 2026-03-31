@@ -55,12 +55,19 @@ export async function updateRecentPages(
   entry: Omit<RecentPage, 'date'> & { date?: string },
 ): Promise<{ success: boolean; error?: string }> {
   let pages: RecentPage[] = [];
+  let rawBody = '';
   try {
     const raw = await client.getSource(org, site, RECENT_PAGES_PATH);
-    const body = extractContent(raw);
-    if (body) pages = JSON.parse(body) as RecentPage[];
+    rawBody = extractContent(raw);
   } catch {
     // no existing file — start fresh
+  }
+  if (rawBody) {
+    try {
+      pages = JSON.parse(rawBody) as RecentPage[];
+    } catch {
+      // corrupt JSON — start fresh
+    }
   }
 
   const newEntry: RecentPage = {
