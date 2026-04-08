@@ -19,6 +19,20 @@ export interface RemoteMCPServerConfig {
 
 export type MCPServerConfig = StdioMCPServerConfig | RemoteMCPServerConfig;
 
+/**
+ * Configuration for a built-in MCP server that is always added to every chat request.
+ * `type`         — transport type ('http' or 'sse').
+ * `sendImsToken` — forward the user's IMS Bearer token in the Authorization header.
+ * `apiKey`       — static API key to send as x-api-key (omitted when undefined).
+ * `instructions` — additional prompt instructions appended to the system prompt.
+ */
+export interface BuiltInMCPServerConfig {
+  type: 'http' | 'sse';
+  url: string;
+  sendImsToken?: boolean;
+  instructions?: string;
+}
+
 export function isStdioConfig(config: MCPServerConfig): config is StdioMCPServerConfig {
   return 'command' in config && !('type' in config);
 }

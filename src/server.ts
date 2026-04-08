@@ -7,7 +7,7 @@ import { createCanvasClientTools, createDATools, createEDSTools } from './tools/
 import { ensureHtmlExtension } from './tools/utils.js';
 import { createCollabClient } from './collab-client.js';
 import { initTelemetry, flushTelemetry } from './telemetry.js';
-import type { MCPServerConfig } from './mcp/types.js';
+import type { MCPServerConfig, BuiltInMCPServerConfig } from './mcp/types.js';
 import { loadSkillsIndex, loadSkillContent } from './skills/loader.js';
 import type { SkillsIndex } from './skills/loader.js';
 import { loadAgentPreset } from './agents/loader.js';
@@ -21,6 +21,8 @@ import {
   trailingAssistantAlreadySuggestedSkill,
   type SessionUserPattern,
 } from './user-message-pattern.js';
+
+const DA_OAUTH_CLIENT_ID = 'darkalley';
 
 const CORS_HEADERS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
@@ -56,6 +58,44 @@ const ChatRequestSchema = z.object({
 });
 
 type PageContext = z.infer<typeof PageContextSchema>;
+
+/** Built-in MCP servers per environment, always added to every chat request. */
+const GOVERNANCE_AGENT_INSTRUCTIONS = `\
+Always use the **Live Preview URL** when interacting with the governance-agent — for both page evaluations and guideline retrieval. \
+It always reflects the current document state without any preview/publish step needed.
+"My/the brand guidelines" means guidelines for the current site, not the whole organization, unless the user says otherwise.`;
+
+const BUILT_IN_MCP_SERVERS: Record<string, Record<string, BuiltInMCPServerConfig>> = {
+  production: {
+    'governance-agent': {
+      type: 'http',
+      url: 'https://adobe-aem-foundation-brand-governance-agent-deploy-9950ff.cloud.adobe.io/mcp/',
+      sendImsToken: true,
+      instructions: GOVERNANCE_AGENT_INSTRUCTIONS,
+    },
+  },
+  ci: {
+    'governance-agent': {
+      type: 'http',
+      url: 'https://brand-governance-agent-stage.adobe.io/mcp/',
+      sendImsToken: true,
+      instructions: GOVERNANCE_AGENT_INSTRUCTIONS,
+    },
+  },
+  dev: {
+    'governance-agent': {
+      type: 'http',
+      url: 'https://brand-governance-agent-stage.adobe.io/mcp/',
+      // url: 'http://127.0.0.1:8000/mcp/',
+      sendImsToken: true,
+      instructions: GOVERNANCE_AGENT_INSTRUCTIONS,
+    },
+  },
+};
+
+function getBuiltInMcpServers(env: Env): Record<string, BuiltInMCPServerConfig> {
+  return BUILT_IN_MCP_SERVERS[env.ENVIRONMENT ?? 'production'] ?? {};
+}
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -494,18 +534,35 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   const edsTools = edsClient ? createEDSTools(edsClient) : {};
   const canvasClientTools = createCanvasClientTools();
 
-  // Build MCP config from servers passed by the frontend (from DA config sheet).
-  const requestMcpServers = mcpServers ?? {};
+  // Build MCP config: user-provided servers merged with always-on built-in servers.
+  const allMcpServers: Record<string, MCPServerConfig> = {};
+
+  // User-provided servers (no auth headers added server-side)
+  for (const [id, url] of Object.entries(mcpServers ?? {})) {
+    allMcpServers[id] = { type: 'http', url };
+  }
+
+  const builtInServers = getBuiltInMcpServers(env);
+
+  // Built-in servers — inject auth headers according to each server's config
+  for (const [id, builtIn] of Object.entries(builtInServers)) {
+    const headers: Record<string, string> = {};
+    if (builtIn.sendImsToken && imsToken) {
+      headers.Authorization = `Bearer ${imsToken}`;
+      headers['x-api-key'] = DA_OAUTH_CLIENT_ID;
+    }
+    allMcpServers[id] = {
+      type: builtIn.type,
+      url: builtIn.url,
+      ...(Object.keys(headers).length > 0 ? { headers } : {}),
+    };
+  }
+
   const mcpConfig =
-    Object.keys(requestMcpServers).length > 0
+    Object.keys(allMcpServers).length > 0
       ? {
-          mcpServers: Object.fromEntries(
-            Object.entries(requestMcpServers).map(([id, url]) => [
-              id,
-              { type: 'sse' as const, url },
-            ]),
-          ) as Record<string, MCPServerConfig>,
-          toolAllowPatterns: Object.keys(requestMcpServers).map((id) => `mcp__${id}__*`),
+          mcpServers: allMcpServers,
+          toolAllowPatterns: Object.keys(allMcpServers).map((id) => `mcp__${id}__*`),
         }
       : null;
 
@@ -651,6 +708,8 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
       agentSkillContents,
       projectMemory,
       sessionPattern,
+      env.ENVIRONMENT,
+      builtInServers,
     ),
     messages: modelMessages as ModelMessage[],
     tools: allTools,
@@ -682,12 +741,21 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
 
 function buildMCPPromptSection(
   mcpConfig?: { mcpServers: Record<string, MCPServerConfig>; toolAllowPatterns: string[] } | null,
+  builtInServers?: Record<string, BuiltInMCPServerConfig>,
 ): string {
   if (!mcpConfig || Object.keys(mcpConfig.mcpServers).length === 0) return '';
   const serverLines = Object.keys(mcpConfig.mcpServers)
     .map((id) => `- **${id}**: tools available as \`mcp__${id}__<toolName>\``)
     .join('\n');
-  return `\n\n## Available MCP Servers\nThe following MCP servers have been discovered from the connected repository:\n${serverLines}\n\nTools from these servers follow the naming pattern \`mcp__<serverId>__<toolName>\`.`;
+  let section = `\n\n## Available MCP Servers\nThe following MCP servers have been discovered from the connected repository:\n${serverLines}\n\nTools from these servers follow the naming pattern \`mcp__<serverId>__<toolName>\`.`;
+  const instructionEntries = Object.entries(builtInServers ?? {}).filter(([, s]) => s.instructions);
+  if (instructionEntries.length > 0) {
+    const instructionLines = instructionEntries
+      .map(([id, s]) => `### ${id}\n${s.instructions}`)
+      .join('\n\n');
+    section += `\n\n### MCP Server Instructions\n${instructionLines}`;
+  }
+  return section;
 }
 
 function buildSkillsPromptSection(skillsIndex?: SkillsIndex | null): string {
@@ -726,10 +794,16 @@ function buildSystemPrompt(
   agentSkillContents?: Record<string, string>,
   projectMemory?: string | null,
   sessionPattern?: SessionUserPattern | null,
+  environment?: string,
+  builtInServers?: Record<string, BuiltInMCPServerConfig>,
 ): string {
-  const mcpSection = buildMCPPromptSection(mcpConfig);
+  const mcpSection = buildMCPPromptSection(mcpConfig, builtInServers);
   const skillsSection = buildSkillsPromptSection(skillsIndex);
   const agentSection = buildAgentPromptSection(activeAgent, agentSkillContents);
+  const pathForUrl = pageContext
+    ? `/${pageContext.path.replace(/^\//, '').replace(/\.html$/, '')}`
+    : '';
+
   return `You are a helpful assistant for Document Authoring (DA) authoring platform.
 You help users with questions about DA features, content authoring, and best practices.
 Use the available tools to search documentation and provide accurate information.
@@ -860,6 +934,14 @@ The user is currently working on the following document in DA (Document Authorin
 - site (repo): ${pageContext.site}
 - path: ${ensureHtmlExtension(pageContext.path)}
 - view: ${pageContext.view}
+- Live Preview URL: https://main--${pageContext.site}--${pageContext.org}.${environment === 'production' || !environment ? 'preview.da.live' : 'stage-preview.da.live'}${pathForUrl}
+- Previewed URL: https://main--${pageContext.site}--${pageContext.org}.aem.page${pathForUrl}
+- Published URL: https://main--${pageContext.site}--${pageContext.org}.aem.live${pathForUrl}
+
+**URL freshness rules:**
+- The **Live Preview URL** always reflects the current state of the document as it appears right now in DA — no operation needed.
+- The **Previewed URL** only reflects the latest content after a **preview** operation has been performed; otherwise it is outdated.
+- The **Published URL** only reflects the latest content after a **publish** operation has been performed (which takes content from the Previewed URL); otherwise it is outdated.
 
 When making DA tool calls, always use these values:
 - org: "${pageContext.org}"
