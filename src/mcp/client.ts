@@ -76,9 +76,9 @@ export class MCPClient {
    */
   private async send(request: JsonRpcRequest): Promise<JsonRpcResponse | null> {
     const reqHeaders: Record<string, string> = {
+      ...this.headers,
       'Content-Type': 'application/json',
       Accept: 'application/json, text/event-stream',
-      ...this.headers,
     };
 
     if (this.sessionId) {
