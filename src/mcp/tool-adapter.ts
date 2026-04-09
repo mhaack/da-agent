@@ -3,8 +3,8 @@
  * that can be merged with DA's built-in tools.
  */
 
-import { tool } from 'ai';
-import { z, type ZodTypeAny } from 'zod';
+import { tool, type Tool } from 'ai';
+import { z, type ZodType, type ZodTypeAny } from 'zod';
 import { MCPClient } from './client.js';
 import type { MCPToolDefinition } from './client.js';
 import type { MCPServerConfig, RemoteMCPServerConfig } from './types.js';
@@ -21,16 +21,16 @@ function getServerUrl(cfg: MCPServerConfig): string | null {
  */
 function jsonPropToZod(prop: Record<string, unknown>, required: boolean): ZodTypeAny {
   let base: ZodTypeAny;
-  const type = prop.type as string | undefined;
+  const type = Array.isArray(prop.type) ? prop.type[0] : (prop.type as string | undefined);
 
   if (type === 'number' || type === 'integer') {
     base = z.number();
   } else if (type === 'boolean') {
     base = z.boolean();
   } else if (type === 'array') {
-    base = z.array(z.unknown());
+    base = z.array(z.any());
   } else if (type === 'object') {
-    base = z.record(z.unknown());
+    base = z.record(z.string(), z.any());
   } else {
     base = z.string();
   }
@@ -46,20 +46,43 @@ function jsonPropToZod(prop: Record<string, unknown>, required: boolean): ZodTyp
  * Convert an MCP JSON Schema inputSchema to a Zod object schema.
  * Using real Zod ensures the Bedrock provider (AI SDK v6) handles it correctly.
  * The jsonSchema() helper uses a different serialisation path that Bedrock rejects.
+ *
+ * Malformed `properties` entries must not become `undefined` Zod fields — Zod 4 then
+ * throws when converting to JSON Schema (e.g. reading `shape[k]._zod`).
  */
-function mcpSchemaToZod(inputSchema: Record<string, unknown> | undefined): ZodTypeAny {
-  const properties = (inputSchema?.properties as Record<string, Record<string, unknown>>) ?? {};
-  const requiredFields = Array.isArray(inputSchema?.required)
+function mcpSchemaToZod(
+  inputSchema: Record<string, unknown> | undefined,
+): ZodType<Record<string, unknown>> {
+  if (inputSchema == null || typeof inputSchema !== 'object' || Array.isArray(inputSchema)) {
+    return z.object({}) as ZodType<Record<string, unknown>>;
+  }
+
+  const rawProps = inputSchema.properties;
+  const properties =
+    rawProps != null && typeof rawProps === 'object' && !Array.isArray(rawProps)
+      ? (rawProps as Record<string, unknown>)
+      : {};
+
+  const requiredFields = Array.isArray(inputSchema.required)
     ? (inputSchema.required as string[])
     : [];
   const required = new Set(requiredFields);
 
   const shape: Record<string, ZodTypeAny> = {};
   for (const [key, prop] of Object.entries(properties)) {
-    shape[key] = jsonPropToZod(prop, required.has(key));
+    if (prop === null || typeof prop !== 'object' || Array.isArray(prop)) {
+      shape[key] = z.any().optional();
+      // eslint-disable-next-line no-continue -- MCP tool discovery (devtools)
+      continue;
+    }
+    try {
+      shape[key] = jsonPropToZod(prop as Record<string, unknown>, required.has(key));
+    } catch {
+      shape[key] = z.any().optional();
+    }
   }
 
-  return z.object(shape);
+  return z.object(shape) as ZodType<Record<string, unknown>>;
 }
 
 function mcpToolToAITool(serverId: string, mcpTool: MCPToolDefinition, mcpClient: MCPClient) {
@@ -67,7 +90,9 @@ function mcpToolToAITool(serverId: string, mcpTool: MCPToolDefinition, mcpClient
   const description = mcpTool.description ?? `MCP tool ${mcpTool.name} from server ${serverId}`;
 
   // Convert MCP JSON Schema to real Zod — the only path Bedrock handles reliably.
-  const inputSchema = mcpSchemaToZod(mcpTool.inputSchema as Record<string, unknown> | undefined);
+  const inputSchema: ZodType<Record<string, unknown>> = mcpSchemaToZod(
+    mcpTool.inputSchema as Record<string, unknown> | undefined,
+  );
 
   return {
     name: toolName,
@@ -104,8 +129,8 @@ export async function connectAndRegisterMCPTools(
     toolAllowPatterns: string[];
   },
   options?: { headers?: Record<string, string>; timeout?: number },
-): Promise<{ tools: Record<string, ReturnType<typeof tool>>; clients: MCPClient[] }> {
-  const tools: Record<string, ReturnType<typeof tool>> = {};
+): Promise<{ tools: Record<string, Tool>; clients: MCPClient[] }> {
+  const tools: Record<string, Tool> = {};
   const clients: MCPClient[] = [];
 
   const entries = Object.entries(mcpConfig.mcpServers);
@@ -137,8 +162,12 @@ export async function connectAndRegisterMCPTools(
         clients.push(client);
 
         for (const mcpTool of mcpTools) {
-          const { name, tool: aiTool } = mcpToolToAITool(serverId, mcpTool, client);
-          tools[name] = aiTool;
+          try {
+            const { name, tool: aiTool } = mcpToolToAITool(serverId, mcpTool, client);
+            tools[name] = aiTool;
+          } catch {
+            /* skip tools with unusable schemas */
+          }
         }
 
         console.log(`MCP server ${serverId}: connected, ${mcpTools.length} tool(s) registered`);

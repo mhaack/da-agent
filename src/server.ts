@@ -30,12 +30,59 @@ const CORS_HEADERS: Record<string, string> = {
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
 
+/** Loggable streamText / provider errors (Error#cause chains, non-enumerable fields). */
+function formatErrorForLog(err: unknown): string {
+  if (err instanceof Error) {
+    const lines = [err.message];
+    if (err.stack) lines.push(err.stack);
+    let c: unknown = err.cause;
+    let depth = 0;
+    while (c instanceof Error && depth < 6) {
+      lines.push(`Caused by: ${c.message}`);
+      c = c.cause;
+      depth += 1;
+    }
+    return lines.join('\n');
+  }
+  if (err && typeof err === 'object') {
+    try {
+      return JSON.stringify(err, null, 2);
+    } catch {
+      return Object.prototype.toString.call(err);
+    }
+  }
+  return String(err);
+}
+
 const PageContextSchema = z.object({
   org: z.string(),
   site: z.string(),
   path: z.string(),
   view: z.string().optional(),
 });
+
+/** Per MCP server: either a list of { name, value } or a header name → value map. */
+const McpServerHeaderListSchema = z.array(z.object({ name: z.string().min(1), value: z.string() }));
+
+const McpServerHeadersValueSchema = z.union([
+  McpServerHeaderListSchema,
+  z.record(z.string(), z.string()),
+]);
+
+/**
+ * Normalize client MCP header payloads to a single Record for RemoteMCPServerConfig.
+ */
+function normalizeMcpHeadersInput(
+  input: z.infer<typeof McpServerHeadersValueSchema> | undefined,
+): Record<string, string> | undefined {
+  if (input === undefined) return undefined;
+  if (Array.isArray(input)) {
+    if (input.length === 0) return undefined;
+    return Object.fromEntries(input.map(({ name, value }) => [name, value]));
+  }
+  if (Object.keys(input).length === 0) return undefined;
+  return input;
+}
 
 const ChatRequestSchema = z.object({
   messages: z.array(z.any()),
@@ -44,6 +91,8 @@ const ChatRequestSchema = z.object({
   agentId: z.string().optional(),
   requestedSkills: z.array(z.string()).optional(),
   mcpServers: z.record(z.string(), z.string()).optional(),
+  /** Optional HTTP headers per server id (keys must match mcpServers). Sent on every MCP request to that URL. */
+  mcpServerHeaders: z.record(z.string(), McpServerHeadersValueSchema).optional(),
   attachments: z
     .array(
       z.object({
@@ -332,11 +381,13 @@ function expandUserSelectionContextForModel(messages: any[]): any[] {
 
 const McpToolsRequestSchema = z.object({
   servers: z.record(z.string(), z.string()),
+  /** Optional HTTP headers per server id (keys should match servers). */
+  serverHeaders: z.record(z.string(), McpServerHeadersValueSchema).optional(),
 });
 
 /**
  * Connect to the given MCP servers and list their individual tools.
- * Accepts POST { servers: { id: url, ... } }.
+ * Accepts POST { servers: { id: url, ... }, serverHeaders?: { id: [...] | { ... } } }.
  * Returns { servers: [{ id, tools: [{ name, description }], error? }] }.
  */
 async function handleMcpToolsList(request: Request): Promise<Response> {
@@ -349,10 +400,13 @@ async function handleMcpToolsList(request: Request): Promise<Response> {
 
   const parsed = McpToolsRequestSchema.safeParse(body);
   if (!parsed.success) {
-    return new Response('Expected { servers: Record<string, string> }', {
-      status: 400,
-      headers: CORS_HEADERS,
-    });
+    return new Response(
+      'Expected { servers: Record<string, string>, serverHeaders?: Record<string, headerList | headerMap> }',
+      {
+        status: 400,
+        headers: CORS_HEADERS,
+      },
+    );
   }
 
   const serverTools: Array<{
@@ -366,7 +420,11 @@ async function handleMcpToolsList(request: Request): Promise<Response> {
 
   await Promise.all(
     entries.map(async ([serverId, serverUrl]) => {
-      const client = new MCPClient(serverUrl, { timeout: 10000 });
+      const headers = normalizeMcpHeadersInput(parsed.data.serverHeaders?.[serverId]);
+      const client = new MCPClient(serverUrl, {
+        timeout: 10000,
+        ...(headers ? { headers } : {}),
+      });
       try {
         await client.initialize();
         clients.push(client);
@@ -486,6 +544,7 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
     agentId,
     requestedSkills,
     mcpServers,
+    mcpServerHeaders,
     attachments = [],
   } = parsed.data;
 
@@ -537,9 +596,14 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   // Build MCP config: user-provided servers merged with always-on built-in servers.
   const allMcpServers: Record<string, MCPServerConfig> = {};
 
-  // User-provided servers (no auth headers added server-side)
+  // User-provided servers — optional client-supplied headers on each MCP HTTP call
   for (const [id, url] of Object.entries(mcpServers ?? {})) {
-    allMcpServers[id] = { type: 'http', url };
+    const headers = normalizeMcpHeadersInput(mcpServerHeaders?.[id]);
+    allMcpServers[id] = {
+      type: 'http',
+      url,
+      ...(headers ? { headers } : {}),
+    };
   }
 
   const builtInServers = getBuiltInMcpServers(env);
@@ -691,7 +755,7 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   const result = streamText({
     model: bedrock('global.anthropic.claude-sonnet-4-6'),
     onError: (error) => {
-      console.error('streamText error:', JSON.stringify(error));
+      console.error('[da-agent] streamText error:', formatErrorForLog(error));
       collab?.disconnect();
       cleanupMCP();
     },
