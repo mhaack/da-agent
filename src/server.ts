@@ -14,6 +14,14 @@ import { loadAgentPreset } from './agents/loader.js';
 import type { AgentPreset } from './agents/loader.js';
 import { connectAndRegisterMCPTools } from './mcp/tool-adapter.js';
 import { MCPClient } from './mcp/client.js';
+import {
+  loadApprovedGeneratedTools,
+  loadGeneratedToolsIndex,
+  buildGeneratedToolsPromptSection,
+  type GeneratedToolsIndex,
+} from './generated-tools/loader.js';
+import { callSandbox } from './generated-tools/sandbox-client.js';
+import { createAemShiftLeftTools } from './aem-shift-left/tool.js';
 
 const CORS_HEADERS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
@@ -35,6 +43,8 @@ const ChatRequestSchema = z.object({
   agentId: z.string().optional(),
   requestedSkills: z.array(z.string()).optional(),
   mcpServers: z.record(z.string(), z.string()).optional(),
+  /** Approved generated tool ids the client wants active for this request */
+  requestedGeneratedTools: z.array(z.string()).optional(),
   attachments: z
     .array(
       z.object({
@@ -589,10 +599,58 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
     }
   }
 
+  // Load approved generated tool defs and register stubs (execution delegates to sandbox).
+  let generatedToolsIndex: GeneratedToolsIndex = { tools: [], source: 'none' };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const generatedToolStubs: Record<string, any> = {};
+  if (adminClient && pageContext && env.GENERATED_TOOLS_ENABLED === 'true') {
+    try {
+      generatedToolsIndex = await loadGeneratedToolsIndex(
+        adminClient,
+        pageContext.org,
+        pageContext.site,
+      );
+      const activeDefs = await loadApprovedGeneratedTools(
+        adminClient,
+        pageContext.org,
+        pageContext.site,
+      );
+      const sandboxUrl: string | undefined = env.GENERATED_TOOLS_SANDBOX_URL;
+      activeDefs.forEach((def) => {
+        const toolName = `gen__${def.id}`;
+        generatedToolStubs[toolName] = {
+          description: def.description,
+          parameters: def.inputSchema,
+          // Execution is handled server-side: stub delegates to the sandbox Worker.
+          execute: async (args: Record<string, unknown>) =>
+            callSandbox(sandboxUrl, {
+              toolId: def.id,
+              org: pageContext.org,
+              site: pageContext.site,
+              args,
+              imsToken: imsToken ?? undefined,
+            }),
+        };
+      });
+    } catch {
+      // Generated tools loading is best-effort; never blocks chat
+    }
+  }
+
   // Process any pending tool approvals before passing messages to streamText.
   // The AI SDK's needsApproval is designed for stateful sessions; since each request
   // creates a fresh streamText call, we resolve approvals here instead.
-  const allTools = { ...canvasClientTools, ...daTools, ...edsTools, ...mcpTools };
+  const shiftLeftTools = createAemShiftLeftTools(env.AEM_SHIFT_LEFT_A2A_URL, imsToken, {
+    logA2aCalls: env.ENVIRONMENT === 'dev',
+  });
+  const allTools = {
+    ...canvasClientTools,
+    ...daTools,
+    ...edsTools,
+    ...mcpTools,
+    ...generatedToolStubs,
+    ...shiftLeftTools,
+  };
 
   const processedMessages = await resolveApprovals(messages, allTools);
   const withSelectionContext = expandUserSelectionContextForModel(
@@ -628,7 +686,14 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
       collab?.disconnect();
       cleanupMCP();
     },
-    system: buildSystemPrompt(pageContext, mcpConfig, skillsIndex, activeAgent, agentSkillContents),
+    system: buildSystemPrompt(
+      pageContext,
+      mcpConfig,
+      skillsIndex,
+      activeAgent,
+      agentSkillContents,
+      generatedToolsIndex,
+    ),
     messages: modelMessages as ModelMessage[],
     tools: allTools,
     stopWhen: stepCountIs(5),
@@ -701,10 +766,14 @@ function buildSystemPrompt(
   skillsIndex?: SkillsIndex | null,
   activeAgent?: AgentPreset | null,
   agentSkillContents?: Record<string, string>,
+  generatedToolsIndex?: GeneratedToolsIndex | null,
 ): string {
   const mcpSection = buildMCPPromptSection(mcpConfig);
   const skillsSection = buildSkillsPromptSection(skillsIndex);
   const agentSection = buildAgentPromptSection(activeAgent, agentSkillContents);
+  const generatedToolsSection = generatedToolsIndex
+    ? buildGeneratedToolsPromptSection(generatedToolsIndex)
+    : '';
   return `You are a helpful assistant for Document Authoring (DA) authoring platform.
 You help users with questions about DA features, content authoring, and best practices.
 Use the available tools to search documentation and provide accurate information.
@@ -861,7 +930,7 @@ The user is in the document editor. Apply these rules for EVERY message in this 
     : ''
 }`
     : ''
-}${mcpSection}${skillsSection}${agentSection}
+}${mcpSection}${skillsSection}${agentSection}${generatedToolsSection}
 
 ## Skills — create, save, and chat UI
 
