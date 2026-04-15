@@ -1,3 +1,51 @@
+# [1.13.0](https://github.com/adobe-rnd/da-agent/compare/v1.12.0...v1.13.0) (2026-04-09)
+
+
+### Features
+
+* support setting headers for mcp ([f5284d7](https://github.com/adobe-rnd/da-agent/commit/f5284d709dca22932be18c4c5e21f060159887a9))
+
+# [1.12.0](https://github.com/adobe-rnd/da-agent/compare/v1.11.0...v1.12.0) (2026-04-08)
+
+
+### Features
+
+* Connect to the governance agent ([#16](https://github.com/adobe-rnd/da-agent/issues/16)) ([c4882e5](https://github.com/adobe-rnd/da-agent/commit/c4882e564d78edbd6683457406143ecaae651a12))
+
+# [1.11.0](https://github.com/adobe-rnd/da-agent/compare/v1.10.1...v1.11.0) (2026-03-31)
+
+
+### Bug Fixes
+
+* deduplicate memory headings, gate instructions on adminClient, move blocks adjacent ([1915bbf](https://github.com/adobe-rnd/da-agent/commit/1915bbf4b35198216ff8a30526b79763c09521ce))
+* handle pre-parsed JSON array from DA client in updateRecentPages ([f2464c9](https://github.com/adobe-rnd/da-agent/commit/f2464c9574885f8df24c1d4aa281566f1224913a))
+* separate network and JSON parse errors in updateRecentPages ([fecf0eb](https://github.com/adobe-rnd/da-agent/commit/fecf0eb9c76445c0e1835f6ae17b96319cac703b))
+* update ([113f418](https://github.com/adobe-rnd/da-agent/commit/113f4180554e62e549934c1504b4f8fd3e0a319d))
+* use context org/site in update_recent_pages and tighten description ([aad876e](https://github.com/adobe-rnd/da-agent/commit/aad876ef9a69c68714722ee08eb72a079c4a4ec8))
+* validate non-empty memory content and document no-approval intent ([4d81357](https://github.com/adobe-rnd/da-agent/commit/4d813575a22d8da557967ad16d06585b0ee60bbf))
+
+
+### Features
+
+* add memory loader for project memory and recent pages ([ddbc120](https://github.com/adobe-rnd/da-agent/commit/ddbc1207be50213e3aeaa1a762a876774f654610))
+* add write_project_memory and update_recent_pages tools ([a41bea7](https://github.com/adobe-rnd/da-agent/commit/a41bea7c8bb93f00a52cb8dc60c6643c679fe5ba))
+* implement memory ([097ae69](https://github.com/adobe-rnd/da-agent/commit/097ae6923cd2b7d720d8fad1a114b98aa714e8e5))
+* inject project memory into system prompt and replace session memory footer ([447bf58](https://github.com/adobe-rnd/da-agent/commit/447bf587b4ca8c0f934d3abf385ba96737784160))
+
+## [1.10.1](https://github.com/adobe-rnd/da-agent/compare/v1.10.0...v1.10.1) (2026-03-26)
+
+
+### Bug Fixes
+
+* **mcp:** adapt MCP tools with Zod schemas for Bedrock / AI SDK v6 ([#14](https://github.com/adobe-rnd/da-agent/issues/14)) ([8c9051d](https://github.com/adobe-rnd/da-agent/commit/8c9051d56dc40aafe882e22a9b5342253dea1559))
+
+# [1.10.0](https://github.com/adobe-rnd/da-agent/compare/v1.9.0...v1.10.0) (2026-03-26)
+
+
+### Features
+
+* make publish workflow return full url ([d6f3ca7](https://github.com/adobe-rnd/da-agent/commit/d6f3ca742602662b3893405d3782c40d93e63c06))
+
 # [1.9.0](https://github.com/adobe-rnd/da-agent/compare/v1.8.1...v1.9.0) (2026-03-26)
 
 

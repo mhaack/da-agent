@@ -7,7 +7,7 @@ import { createCanvasClientTools, createDATools, createEDSTools } from './tools/
 import { ensureHtmlExtension } from './tools/utils.js';
 import { createCollabClient } from './collab-client.js';
 import { initTelemetry, flushTelemetry } from './telemetry.js';
-import type { MCPServerConfig } from './mcp/types.js';
+import type { MCPServerConfig, BuiltInMCPServerConfig } from './mcp/types.js';
 import { loadSkillsIndex, loadSkillContent } from './skills/loader.js';
 import type { SkillsIndex } from './skills/loader.js';
 import { loadAgentPreset } from './agents/loader.js';
@@ -22,12 +22,45 @@ import {
 } from './generated-tools/loader.js';
 import { callSandbox } from './generated-tools/sandbox-client.js';
 import { createAemShiftLeftTools } from './aem-shift-left/tool.js';
+import { fetchProjectMemory } from './memory/loader.js';
+import {
+  detectSessionUserPattern,
+  formatSessionPatternForPrompt,
+  trailingAssistantAlreadySuggestedSkill,
+  type SessionUserPattern,
+} from './user-message-pattern.js';
+
+const DA_OAUTH_CLIENT_ID = 'darkalley';
 
 const CORS_HEADERS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
+
+/** Loggable streamText / provider errors (Error#cause chains, non-enumerable fields). */
+function formatErrorForLog(err: unknown): string {
+  if (err instanceof Error) {
+    const lines = [err.message];
+    if (err.stack) lines.push(err.stack);
+    let c: unknown = err.cause;
+    let depth = 0;
+    while (c instanceof Error && depth < 6) {
+      lines.push(`Caused by: ${c.message}`);
+      c = c.cause;
+      depth += 1;
+    }
+    return lines.join('\n');
+  }
+  if (err && typeof err === 'object') {
+    try {
+      return JSON.stringify(err, null, 2);
+    } catch {
+      return Object.prototype.toString.call(err);
+    }
+  }
+  return String(err);
+}
 
 const PageContextSchema = z.object({
   org: z.string(),
@@ -36,6 +69,29 @@ const PageContextSchema = z.object({
   view: z.string().optional(),
 });
 
+/** Per MCP server: either a list of { name, value } or a header name → value map. */
+const McpServerHeaderListSchema = z.array(z.object({ name: z.string().min(1), value: z.string() }));
+
+const McpServerHeadersValueSchema = z.union([
+  McpServerHeaderListSchema,
+  z.record(z.string(), z.string()),
+]);
+
+/**
+ * Normalize client MCP header payloads to a single Record for RemoteMCPServerConfig.
+ */
+function normalizeMcpHeadersInput(
+  input: z.infer<typeof McpServerHeadersValueSchema> | undefined,
+): Record<string, string> | undefined {
+  if (input === undefined) return undefined;
+  if (Array.isArray(input)) {
+    if (input.length === 0) return undefined;
+    return Object.fromEntries(input.map(({ name, value }) => [name, value]));
+  }
+  if (Object.keys(input).length === 0) return undefined;
+  return input;
+}
+
 const ChatRequestSchema = z.object({
   messages: z.array(z.any()),
   pageContext: PageContextSchema.optional(),
@@ -43,6 +99,8 @@ const ChatRequestSchema = z.object({
   agentId: z.string().optional(),
   requestedSkills: z.array(z.string()).optional(),
   mcpServers: z.record(z.string(), z.string()).optional(),
+  /** Optional HTTP headers per server id (keys must match mcpServers). Sent on every MCP request to that URL. */
+  mcpServerHeaders: z.record(z.string(), McpServerHeadersValueSchema).optional(),
   /** Approved generated tool ids the client wants active for this request */
   requestedGeneratedTools: z.array(z.string()).optional(),
   attachments: z
@@ -59,6 +117,44 @@ const ChatRequestSchema = z.object({
 });
 
 type PageContext = z.infer<typeof PageContextSchema>;
+
+/** Built-in MCP servers per environment, always added to every chat request. */
+const GOVERNANCE_AGENT_INSTRUCTIONS = `\
+Always use the **Live Preview URL** when interacting with the governance-agent — for both page evaluations and guideline retrieval. \
+It always reflects the current document state without any preview/publish step needed.
+"My/the brand guidelines" means guidelines for the current site, not the whole organization, unless the user says otherwise.`;
+
+const BUILT_IN_MCP_SERVERS: Record<string, Record<string, BuiltInMCPServerConfig>> = {
+  production: {
+    'governance-agent': {
+      type: 'http',
+      url: 'https://adobe-aem-foundation-brand-governance-agent-deploy-9950ff.cloud.adobe.io/mcp/',
+      sendImsToken: true,
+      instructions: GOVERNANCE_AGENT_INSTRUCTIONS,
+    },
+  },
+  ci: {
+    'governance-agent': {
+      type: 'http',
+      url: 'https://brand-governance-agent-stage.adobe.io/mcp/',
+      sendImsToken: true,
+      instructions: GOVERNANCE_AGENT_INSTRUCTIONS,
+    },
+  },
+  dev: {
+    'governance-agent': {
+      type: 'http',
+      url: 'https://brand-governance-agent-stage.adobe.io/mcp/',
+      // url: 'http://127.0.0.1:8000/mcp/',
+      sendImsToken: true,
+      instructions: GOVERNANCE_AGENT_INSTRUCTIONS,
+    },
+  },
+};
+
+function getBuiltInMcpServers(env: Env): Record<string, BuiltInMCPServerConfig> {
+  return BUILT_IN_MCP_SERVERS[env.ENVIRONMENT ?? 'production'] ?? {};
+}
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -295,11 +391,13 @@ function expandUserSelectionContextForModel(messages: any[]): any[] {
 
 const McpToolsRequestSchema = z.object({
   servers: z.record(z.string(), z.string()),
+  /** Optional HTTP headers per server id (keys should match servers). */
+  serverHeaders: z.record(z.string(), McpServerHeadersValueSchema).optional(),
 });
 
 /**
  * Connect to the given MCP servers and list their individual tools.
- * Accepts POST { servers: { id: url, ... } }.
+ * Accepts POST { servers: { id: url, ... }, serverHeaders?: { id: [...] | { ... } } }.
  * Returns { servers: [{ id, tools: [{ name, description }], error? }] }.
  */
 async function handleMcpToolsList(request: Request): Promise<Response> {
@@ -312,10 +410,13 @@ async function handleMcpToolsList(request: Request): Promise<Response> {
 
   const parsed = McpToolsRequestSchema.safeParse(body);
   if (!parsed.success) {
-    return new Response('Expected { servers: Record<string, string> }', {
-      status: 400,
-      headers: CORS_HEADERS,
-    });
+    return new Response(
+      'Expected { servers: Record<string, string>, serverHeaders?: Record<string, headerList | headerMap> }',
+      {
+        status: 400,
+        headers: CORS_HEADERS,
+      },
+    );
   }
 
   const serverTools: Array<{
@@ -329,7 +430,11 @@ async function handleMcpToolsList(request: Request): Promise<Response> {
 
   await Promise.all(
     entries.map(async ([serverId, serverUrl]) => {
-      const client = new MCPClient(serverUrl, { timeout: 10000 });
+      const headers = normalizeMcpHeadersInput(parsed.data.serverHeaders?.[serverId]);
+      const client = new MCPClient(serverUrl, {
+        timeout: 10000,
+        ...(headers ? { headers } : {}),
+      });
       try {
         await client.initialize();
         clients.push(client);
@@ -449,6 +554,7 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
     agentId,
     requestedSkills,
     mcpServers,
+    mcpServerHeaders,
     attachments = [],
   } = parsed.data;
 
@@ -474,6 +580,11 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
 
   const edsClient = imsToken ? new EDSAdminClient({ apiToken: imsToken }) : null;
 
+  const projectMemory =
+    adminClient && pageContext
+      ? await fetchProjectMemory(adminClient, pageContext.org, pageContext.site)
+      : null;
+
   const daTools = createDATools(adminClient, {
     pageContext: pageContext ?? undefined,
     collab: collab ?? undefined,
@@ -492,18 +603,40 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   const edsTools = edsClient ? createEDSTools(edsClient) : {};
   const canvasClientTools = createCanvasClientTools();
 
-  // Build MCP config from servers passed by the frontend (from DA config sheet).
-  const requestMcpServers = mcpServers ?? {};
+  // Build MCP config: user-provided servers merged with always-on built-in servers.
+  const allMcpServers: Record<string, MCPServerConfig> = {};
+
+  // User-provided servers — optional client-supplied headers on each MCP HTTP call
+  for (const [id, url] of Object.entries(mcpServers ?? {})) {
+    const headers = normalizeMcpHeadersInput(mcpServerHeaders?.[id]);
+    allMcpServers[id] = {
+      type: 'http',
+      url,
+      ...(headers ? { headers } : {}),
+    };
+  }
+
+  const builtInServers = getBuiltInMcpServers(env);
+
+  // Built-in servers — inject auth headers according to each server's config
+  for (const [id, builtIn] of Object.entries(builtInServers)) {
+    const headers: Record<string, string> = {};
+    if (builtIn.sendImsToken && imsToken) {
+      headers.Authorization = `Bearer ${imsToken}`;
+      headers['x-api-key'] = DA_OAUTH_CLIENT_ID;
+    }
+    allMcpServers[id] = {
+      type: builtIn.type,
+      url: builtIn.url,
+      ...(Object.keys(headers).length > 0 ? { headers } : {}),
+    };
+  }
+
   const mcpConfig =
-    Object.keys(requestMcpServers).length > 0
+    Object.keys(allMcpServers).length > 0
       ? {
-          mcpServers: Object.fromEntries(
-            Object.entries(requestMcpServers).map(([id, url]) => [
-              id,
-              { type: 'sse' as const, url },
-            ]),
-          ) as Record<string, MCPServerConfig>,
-          toolAllowPatterns: Object.keys(requestMcpServers).map((id) => `mcp__${id}__*`),
+          mcpServers: allMcpServers,
+          toolAllowPatterns: Object.keys(allMcpServers).map((id) => `mcp__${id}__*`),
         }
       : null;
 
@@ -653,9 +786,12 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   };
 
   const processedMessages = await resolveApprovals(messages, allTools);
-  const withSelectionContext = expandUserSelectionContextForModel(
-    stripClientOnlyToolInputs(processedMessages),
-  );
+  const strippedForModel = stripClientOnlyToolInputs(processedMessages);
+  let sessionPattern: SessionUserPattern | null = null;
+  if (!trailingAssistantAlreadySuggestedSkill(strippedForModel)) {
+    sessionPattern = detectSessionUserPattern(strippedForModel);
+  }
+  const withSelectionContext = expandUserSelectionContextForModel(strippedForModel);
   const attachmentMeta = attachments.map((a) => ({
     id: a.id,
     fileName: a.fileName,
@@ -677,7 +813,7 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   const result = streamText({
     model: bedrock('global.anthropic.claude-sonnet-4-6'),
     onError: (error) => {
-      console.error('streamText error:', JSON.stringify(error));
+      console.error('[da-agent] streamText error:', formatErrorForLog(error));
       collab?.disconnect();
       cleanupMCP();
     },
@@ -693,6 +829,10 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
       activeAgent,
       agentSkillContents,
       generatedToolsIndex,
+      projectMemory,
+      sessionPattern,
+      env.ENVIRONMENT,
+      builtInServers,
     ),
     messages: modelMessages as ModelMessage[],
     tools: allTools,
@@ -724,12 +864,21 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
 
 function buildMCPPromptSection(
   mcpConfig?: { mcpServers: Record<string, MCPServerConfig>; toolAllowPatterns: string[] } | null,
+  builtInServers?: Record<string, BuiltInMCPServerConfig>,
 ): string {
   if (!mcpConfig || Object.keys(mcpConfig.mcpServers).length === 0) return '';
   const serverLines = Object.keys(mcpConfig.mcpServers)
     .map((id) => `- **${id}**: tools available as \`mcp__${id}__<toolName>\``)
     .join('\n');
-  return `\n\n## Available MCP Servers\nThe following MCP servers have been discovered from the connected repository:\n${serverLines}\n\nTools from these servers follow the naming pattern \`mcp__<serverId>__<toolName>\`.`;
+  let section = `\n\n## Available MCP Servers\nThe following MCP servers have been discovered from the connected repository:\n${serverLines}\n\nTools from these servers follow the naming pattern \`mcp__<serverId>__<toolName>\`.`;
+  const instructionEntries = Object.entries(builtInServers ?? {}).filter(([, s]) => s.instructions);
+  if (instructionEntries.length > 0) {
+    const instructionLines = instructionEntries
+      .map(([id, s]) => `### ${id}\n${s.instructions}`)
+      .join('\n\n');
+    section += `\n\n### MCP Server Instructions\n${instructionLines}`;
+  }
+  return section;
 }
 
 function buildSkillsPromptSection(skillsIndex?: SkillsIndex | null): string {
@@ -767,12 +916,19 @@ function buildSystemPrompt(
   activeAgent?: AgentPreset | null,
   agentSkillContents?: Record<string, string>,
   generatedToolsIndex?: GeneratedToolsIndex | null,
+  projectMemory?: string | null,
+  sessionPattern?: SessionUserPattern | null,
+  environment?: string,
+  builtInServers?: Record<string, BuiltInMCPServerConfig>,
 ): string {
-  const mcpSection = buildMCPPromptSection(mcpConfig);
+  const mcpSection = buildMCPPromptSection(mcpConfig, builtInServers);
   const skillsSection = buildSkillsPromptSection(skillsIndex);
   const agentSection = buildAgentPromptSection(activeAgent, agentSkillContents);
   const generatedToolsSection = generatedToolsIndex
     ? buildGeneratedToolsPromptSection(generatedToolsIndex)
+    : '';
+  const pathForUrl = pageContext
+    ? `/${pageContext.path.replace(/^\//, '').replace(/\.html$/, '')}`
     : '';
   return `You are a helpful assistant for Document Authoring (DA) authoring platform.
 You help users with questions about DA features, content authoring, and best practices.
@@ -781,6 +937,7 @@ Always provide helpful, accurate responses. You must never refer to the platform
 
 CRITICAL INSTRUCTION - TOOL USAGE:
 - For bulk preview, publish, or unpublish (live delete) of multiple DA pages in the canvas workspace, use the matching bulk canvas tools (run in the browser). Do not claim the operation finished until the user completes or dismisses the dialog.
+- When bulk publish returns publishedUrls, include those URLs directly in your response so the user can open the live pages.
 - NEVER mention tool names in your response text
 - NEVER explain that you are calling a tool or function
 - Simply perform the action and describe the RESULT, not the process
@@ -903,6 +1060,14 @@ The user is currently working on the following document in DA (Document Authorin
 - site (repo): ${pageContext.site}
 - path: ${ensureHtmlExtension(pageContext.path)}
 - view: ${pageContext.view}
+- Live Preview URL: https://main--${pageContext.site}--${pageContext.org}.${environment === 'production' || !environment ? 'preview.da.live' : 'stage-preview.da.live'}${pathForUrl}
+- Previewed URL: https://main--${pageContext.site}--${pageContext.org}.aem.page${pathForUrl}
+- Published URL: https://main--${pageContext.site}--${pageContext.org}.aem.live${pathForUrl}
+
+**URL freshness rules:**
+- The **Live Preview URL** always reflects the current state of the document as it appears right now in DA — no operation needed.
+- The **Previewed URL** only reflects the latest content after a **preview** operation has been performed; otherwise it is outdated.
+- The **Published URL** only reflects the latest content after a **publish** operation has been performed (which takes content from the Previewed URL); otherwise it is outdated.
 
 When making DA tool calls, always use these values:
 - org: "${pageContext.org}"
@@ -930,9 +1095,34 @@ The user is in the document editor. Apply these rules for EVERY message in this 
     : ''
 }`
     : ''
-}${mcpSection}${skillsSection}${agentSection}${generatedToolsSection}
+}${
+    projectMemory
+      ? `
+## Project Memory
+The following is long-lived memory about this site, accumulated from previous sessions:
 
-## Skills — create, save, and chat UI
+${projectMemory}
+
+Use this context to better understand the site before taking any actions.
+`
+      : ''
+  }${
+    pageContext
+      ? `
+## Memory Instructions
+At the end of every response where you have learned something about this site, you MUST call write_project_memory to persist what you know.
+This includes: answering questions about the site structure, listing pages, reading content to understand the site, or any interaction that reveals the site's purpose, main sections, URL patterns, templates, or content conventions.
+Always write the full updated markdown — include everything you know, not just what changed.
+IMPORTANT: Writing about what you learned in your text response does NOT save it. Only an actual write_project_memory tool call saves to memory. Never say "I've saved this" or "I'll remember this" without calling the tool.
+Do NOT call it for pure content edits where you learned nothing new about the site's structure.
+`
+      : ''
+  }${mcpSection}${skillsSection}${agentSection}${generatedToolsSection}
+
+## Skill Suggestions
+The server may append **Session pattern detected** when it automatically finds several similar user messages in this thread (any topic — not a fixed list). When that section is present, you MUST output the \`[SKILL_SUGGESTION]\` block in the same reply.
+
+When there is no server pattern block, you may still suggest a skill on your own if you notice repeated, specific instructions across messages and no existing skill covers them.
 
 ### First offer / draft (preferred for new skills the user has not asked to persist yet)
 Use the \`[SKILL_SUGGESTION]\` block below so the client shows the **yellow in-chat card** with **Create Skill** and **Dismiss**. Do **not** call \`da_create_skill\` for that first offer—calling the tool skips that UX and is only for explicit persistence.
@@ -962,5 +1152,7 @@ Rules:
 - \`---SKILL_CONTENT_START---\` and \`---SKILL_CONTENT_END---\` must match exactly; put the skill body between them, including leading \`#\` title.
 
 ### Proactive suggestions (only after 2–3 similar, repeatable requests)
-Suggest only when the pattern is specific (not generic Q&A) and no existing skill covers it. Output the \`[SKILL_SUGGESTION]\` block with a concrete draft first. Only call **da_create_skill** after the user clearly wants it written to the config without using the chat card.`;
+Suggest only when the pattern is specific (not generic Q&A) and no existing skill covers it. Output the \`[SKILL_SUGGESTION]\` block with a concrete draft first. Only call **da_create_skill** after the user clearly wants it written to the config without using the chat card.${
+    sessionPattern ? formatSessionPatternForPrompt(sessionPattern) : ''
+  }`;
 }

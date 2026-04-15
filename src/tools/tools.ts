@@ -15,6 +15,18 @@ import type { AgentPreset } from '../agents/loader';
 import { ensureHtmlExtension } from './utils';
 import type { EDSAdminClient } from '../eds-admin/client';
 import type { EDSOperationResult, EDSPublishResult, EDSToolError } from '../eds-admin/types';
+import { saveProjectMemory, updateRecentPages } from '../memory/loader.js';
+
+function recordPageChange(
+  client: DAAdminClient,
+  org: string,
+  site: string,
+  path: string,
+  summary: string,
+): void {
+  // Fire-and-forget: record page modification without blocking the tool response
+  updateRecentPages(client, org, site, { path, summary }).catch(() => {});
+}
 
 function isAPIError(e: unknown): e is DAAPIError {
   return typeof e === 'object' && e !== null && 'status' in e && 'message' in e;
@@ -135,14 +147,11 @@ export function createDATools(
       }),
       needsApproval: async () => true,
       execute: async ({ org, repo, path, content, contentType }) => {
+        const pathWithExt = ensureHtmlExtension(path);
         try {
-          return await client.createSource(
-            org,
-            repo,
-            ensureHtmlExtension(path),
-            content,
-            contentType,
-          );
+          const result = await client.createSource(org, repo, pathWithExt, content, contentType);
+          recordPageChange(client, org, repo, pathWithExt, 'Created new page');
+          return result;
         } catch (e) {
           if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
@@ -174,7 +183,7 @@ export function createDATools(
         contentType: z.string().optional().describe('Optional content type'),
       }),
       needsApproval: async () => true,
-      execute: async ({ org, repo, path, content, contentType }) => {
+      execute: async ({ org, repo, path, content, contentType, humanReadableSummary }) => {
         const pathWithExt = ensureHtmlExtension(path);
         try {
           if (useCollabForDoc(org, repo, path, opts) && opts?.collab) {
@@ -183,9 +192,12 @@ export function createDATools(
               initiator: 'collab',
             });
             opts.collab.disconnect();
+            recordPageChange(client, org, repo, pathWithExt, humanReadableSummary);
             return { path: pathWithExt, source: 'collab', updated: true };
           }
-          return await client.updateSource(org, repo, pathWithExt, content, contentType);
+          const result = await client.updateSource(org, repo, pathWithExt, content, contentType);
+          recordPageChange(client, org, repo, pathWithExt, humanReadableSummary);
+          return result;
         } catch (e) {
           if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
@@ -222,13 +234,16 @@ export function createDATools(
         destinationPath: z.string().describe('Path where the file should be copied to'),
       }),
       execute: async ({ org, repo, sourcePath, destinationPath }) => {
+        const destWithExt = ensureHtmlExtension(destinationPath);
         try {
-          return await client.copyContent(
+          const result = await client.copyContent(
             org,
             repo,
             ensureHtmlExtension(sourcePath),
-            ensureHtmlExtension(destinationPath),
+            destWithExt,
           );
+          recordPageChange(client, org, repo, destWithExt, `Copied from ${sourcePath}`);
+          return result;
         } catch (e) {
           if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
@@ -247,13 +262,16 @@ export function createDATools(
       }),
       needsApproval: async () => true,
       execute: async ({ org, repo, sourcePath, destinationPath }) => {
+        const destWithExt = ensureHtmlExtension(destinationPath);
         try {
-          return await client.moveContent(
+          const result = await client.moveContent(
             org,
             repo,
             ensureHtmlExtension(sourcePath),
-            ensureHtmlExtension(destinationPath),
+            destWithExt,
           );
+          recordPageChange(client, org, repo, destWithExt, `Moved from ${sourcePath}`);
+          return result;
         } catch (e) {
           if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
@@ -523,6 +541,31 @@ export function createDATools(
         }
       },
     });
+
+    // Memory tools write to internal agent metadata paths — no user approval needed.
+    tools.write_project_memory = tool({
+      description:
+        'Write or update the long-lived project memory for this site. ' +
+        'Call this when you discover significant information about the site — its purpose, ' +
+        'main sections, URL structure, templates, or content conventions. ' +
+        'Pass the full updated markdown content each time.',
+      inputSchema: z.object({
+        content: z
+          .string()
+          .min(1)
+          .describe('Full markdown content to write to the project memory file.'),
+      }),
+      execute: async ({ content }) => {
+        if (!ctxOrg || !ctxRepo) return { error: 'No org/site context available' };
+        try {
+          const result = await saveProjectMemory(client, ctxOrg, ctxRepo, content);
+          if (!result.success) return { error: result.error };
+          return { saved: true };
+        } catch (e) {
+          return { error: String(e) };
+        }
+      },
+    });
   }
 
   return tools;
@@ -549,9 +592,11 @@ const bulkAemCanvasDialogOutputSchema = z.object({
         ok: z.boolean(),
         status: z.string().optional(),
         message: z.string().optional(),
+        publishedUrl: z.string().optional(),
       }),
     )
     .optional(),
+  publishedUrls: z.array(z.string()).optional(),
 });
 
 const bulkAemPagesInputSchema = z.object({
@@ -583,7 +628,8 @@ export function createCanvasClientTools() {
         "Open a bulk publish dialog in the user's browser to publish multiple DA pages to AEM live (preview then live). " +
         'Use when the user wants to publish several pages at once from the canvas workspace. ' +
         'Paths may be relative to the current org/repo or full "org/repo/path/to/page.html". ' +
-        'The user runs the action in the dialog; results return after they finish or cancel.',
+        'The user runs the action in the dialog; results return after they finish or cancel, including publishedUrls ' +
+        'formatted like "https://main--site--org.aem.page/path" for successful publishes.',
       inputSchema: bulkAemPagesInputSchema,
       outputSchema: bulkAemCanvasDialogOutputSchema,
     }),
