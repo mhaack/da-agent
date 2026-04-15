@@ -46,6 +46,26 @@ describe('loadSkillsIndex', () => {
     expect(index.skills[1]).toEqual({ id: 'seo-checklist', title: 'SEO Checklist' });
   });
 
+  it('omits draft skills from the index', async () => {
+    const client = mockClient({
+      configBySite: {
+        mysite: {
+          skills: {
+            data: [
+              { key: 'live', content: '# Live\n\nok' },
+              { key: 'wip', content: '# WIP\n\nnot ready', status: 'draft' },
+            ],
+            total: 2,
+          },
+        },
+      },
+    });
+
+    const index = await loadSkillsIndex(client, 'org', 'mysite');
+    expect(index.skills).toHaveLength(1);
+    expect(index.skills[0]?.id).toBe('live');
+  });
+
   it('returns none when sheet missing or empty', async () => {
     const client = mockClient({ configBySite: { mysite: {} } });
     const index = await loadSkillsIndex(client, 'org', 'mysite');
@@ -88,6 +108,20 @@ describe('loadSkillContent', () => {
   it('returns null when skill not in sheet', async () => {
     const client = mockClient({ configBySite: { mysite: { skills: { data: [] } } } });
     const content = await loadSkillContent(client, 'org', 'mysite', 'nonexistent');
+    expect(content).toBeNull();
+  });
+
+  it('returns null for draft skills', async () => {
+    const client = mockClient({
+      configBySite: {
+        mysite: {
+          skills: {
+            data: [{ key: 'wip', content: '# WIP\n\nx', status: 'draft' }],
+          },
+        },
+      },
+    });
+    const content = await loadSkillContent(client, 'org', 'mysite', 'wip');
     expect(content).toBeNull();
   });
 });

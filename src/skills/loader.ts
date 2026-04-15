@@ -13,7 +13,23 @@ export interface SkillsIndex {
 
 const SKILLS_SHEET = 'skills';
 
-type SkillRow = { key?: string; id?: string; content?: string; value?: string; body?: string };
+type SkillRow = {
+  key?: string;
+  id?: string;
+  content?: string;
+  value?: string;
+  body?: string;
+  status?: string;
+};
+
+function skillRowStatus(row: SkillRow | undefined): 'draft' | 'approved' {
+  if (!row) return 'approved';
+  const s = String(row.status ?? '')
+    .trim()
+    .toLowerCase();
+  if (s === 'draft') return 'draft';
+  return 'approved';
+}
 
 function extractTitle(markdown: string): string {
   const lines = markdown.split('\n');
@@ -56,6 +72,7 @@ export async function loadSkillsIndex(
         const id = normalizeSkillId(String(row.key ?? row.id ?? ''));
         const raw = String(row.content ?? row.value ?? row.body ?? '');
         if (!id || !raw.trim()) return null;
+        if (skillRowStatus(row) === 'draft') return null;
         return { id, title: extractTitle(raw) };
       })
       .filter((s): s is SkillSummary => s !== null);
@@ -81,6 +98,7 @@ export async function loadSkillContent(
     const rows = rowsFromConfig(cfg);
     const row = rows.find((r) => normalizeSkillId(String(r.key ?? r.id ?? '')) === want);
     if (!row) return null;
+    if (skillRowStatus(row) === 'draft') return null;
     const raw = String(row.content ?? row.value ?? row.body ?? '').trim();
     return raw || null;
   } catch {
@@ -97,6 +115,7 @@ export async function saveSkillContent(
   site: string,
   skillId: string,
   content: string,
+  options?: { status?: 'draft' | 'approved' },
 ): Promise<{ success: boolean; error?: string }> {
   const id = normalizeSkillId(skillId);
   if (!id) {
@@ -127,8 +146,13 @@ export async function saveSkillContent(
     };
     const data = [...(sheet.data || [])];
     const idx = data.findIndex((r) => normalizeSkillId(String(r.key ?? r.id ?? '')) === id);
-    const row: SkillRow = { key: id, content };
-    if (idx >= 0) data[idx] = { ...data[idx], ...row };
+    const prev = idx >= 0 ? data[idx] : undefined;
+    const nextStatus =
+      options?.status === 'draft' || options?.status === 'approved'
+        ? options.status
+        : skillRowStatus(prev);
+    const row: SkillRow = { ...(prev || {}), key: id, content, status: nextStatus };
+    if (idx >= 0) data[idx] = row;
     else data.push(row);
     cfg[SKILLS_SHEET] = {
       ...sheet,

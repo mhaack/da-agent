@@ -454,7 +454,9 @@ export function createDATools(
       execute: async ({ skillId, content }) => {
         if (!ctxOrg) return { error: 'No organization context available' };
         try {
-          const result = await saveSkillContent(client, ctxOrg, ctxRepo, skillId, content);
+          const result = await saveSkillContent(client, ctxOrg, ctxRepo, skillId, content, {
+            status: 'draft',
+          });
           if (!result.success) return { error: result.error };
           return { skillId, saved: true };
         } catch (e) {
