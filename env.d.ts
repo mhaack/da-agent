@@ -62,8 +62,6 @@ declare namespace Cloudflare {
     GENERATED_TOOLS_ENABLED?: string;
     /** URL of the da-generated-tools-sandbox Worker (Phase 1+) */
     GENERATED_TOOLS_SANDBOX_URL?: string;
-    /** AEM shift-left A2A base URL (e.g. https://&lt;host&gt;/a2a) */
-    AEM_SHIFT_LEFT_A2A_URL?: string;
   }
 }
 interface Env extends Cloudflare.Env {}

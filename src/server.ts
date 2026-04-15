@@ -21,7 +21,6 @@ import {
   type GeneratedToolsIndex,
 } from './generated-tools/loader.js';
 import { callSandbox } from './generated-tools/sandbox-client.js';
-import { createAemShiftLeftTools } from './aem-shift-left/tool.js';
 import { fetchProjectMemory } from './memory/loader.js';
 import {
   detectSessionUserPattern,
@@ -773,16 +772,12 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   // Process any pending tool approvals before passing messages to streamText.
   // The AI SDK's needsApproval is designed for stateful sessions; since each request
   // creates a fresh streamText call, we resolve approvals here instead.
-  const shiftLeftTools = createAemShiftLeftTools(env.AEM_SHIFT_LEFT_A2A_URL, imsToken, {
-    logA2aCalls: env.ENVIRONMENT === 'dev',
-  });
   const allTools = {
     ...canvasClientTools,
     ...daTools,
     ...edsTools,
     ...mcpTools,
     ...generatedToolStubs,
-    ...shiftLeftTools,
   };
 
   const processedMessages = await resolveApprovals(messages, allTools);

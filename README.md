@@ -23,26 +23,8 @@ da-agent (Cloudflare Worker)
   ├── Vercel AI SDK streamText → Amazon Bedrock (claude-sonnet-4-6)
   ├── DA tools → DAADMIN service binding → da-admin Worker
   ├── Collab client → DACOLLAB service binding → da-collab Worker
-  ├── Skills loader → DAADMIN (reads /.da/skills/*.md)
-  └── Optional: aem_shift_left_content_create tool
-        │  (only if AEM_SHIFT_LEFT_A2A_URL is set)
-        ▼
-      POST {AEM_SHIFT_LEFT_A2A_URL}/  (JSON-RPC method message/stream, SSE response)
-      Authorization: Bearer <same imsToken as /chat body>
-        ▼
-      aem-shift-left A2A server (external)
+  └── Skills loader → DAADMIN (reads /.da/skills/*.md)
 ```
-
-### AEM shift-left A2A layer (this repo)
-
-| Piece | Role |
-| --- | --- |
-| `src/aem-shift-left/tool.ts` | Registers the Vercel AI tool `aem_shift_left_content_create` (instruction + optional `context_id`). |
-| `src/aem-shift-left/a2a-sse.ts` | HTTP client: builds JSON-RPC `message/stream`, reads **SSE** from the A2A base URL, parses final message and `contextId`. |
-| `src/server.ts` | Merges shift-left tools into `allTools` when `env.AEM_SHIFT_LEFT_A2A_URL` is set; forwards the request’s `imsToken` into the tool. |
-| `test/aem-shift-left-a2a.test.ts` | Unit tests for SSE parsing helpers (no live network). |
-
-The **A2A protocol implementation** for the remote service lives in the **[aem-shift-left](https://github.com/adobe/aem-shift-left)** repository; da-agent is a **client** of that server.
 
 ## Project structure
 
@@ -50,7 +32,6 @@ The **A2A protocol implementation** for the remote service lives in the **[aem-s
 src/
   server.ts            # Worker entry point, chat handler, system prompt, skills loader
   collab-client.ts     # Y.js collab session client
-  aem-shift-left/      # AEM shift-left A2A client (tool + SSE parser)
   da-admin/
     client.ts          # DA Admin API client (wraps service binding calls)
     types.ts           # TypeScript types for DA Admin API
@@ -93,31 +74,9 @@ npm run dev
 
 The worker listens on **`http://127.0.0.1:4002`** (see `[dev] port` in `wrangler.toml`).
 
-### AEM shift-left (optional)
-
-To expose the `aem_shift_left_content_create` tool (A2A client to [aem-shift-left](https://github.com/adobe/aem-shift-left)), set the A2A base URL (no trailing slash issues — both `https://host/a2a` and `https://host/a2a/` work):
-
-- **Wrangler / production**: add secret or var `AEM_SHIFT_LEFT_A2A_URL`, e.g. `https://<shift-left-host>/a2a`
-- **Local dev**: set in `[env.dev.vars]` in `wrangler.toml`, or override with `.dev.vars`
-
-The worker forwards the user’s IMS token as `Authorization: Bearer` on `POST …/a2a/` (`message/stream` JSON-RPC over SSE). Stage URL pattern is environment-specific; see aem-shift-left `python/tests/e2e/a2a/test_config.py` for reference hosts.
-
-When `ENVIRONMENT` is `dev` (`wrangler dev -e dev`), each tool invocation logs one line to the terminal, e.g. `[da-agent] AEM shift-left A2A → POST https://…/a2a/ …`, so you can confirm the outbound A2A call (the browser never sees this request).
-
 ### Invoking the agent from the command line
 
-There is no separate DA CLI for chat; you call **`POST /chat`** like the browser does.
-
-1. **IMS token** — Use a **stage** Adobe IMS access token (same tier as localhost DA). Obtain it however your team usually does (e.g. from a dev session); paste into `IMS_TOKEN` below. The JSON field `imsToken` is what da-agent uses for DA Admin, EDS, and shift-left A2A.
-
-2. **Run** (streaming UI message protocol; use `-N` so chunks print as they arrive). The example uses `jq` to build JSON safely; alternatively save a `.json` body and use `curl ... -d @body.json`.
-
-   Or use the helper script (same prerequisites: `IMS_TOKEN`, running `npm run dev`):
-
-   ```bash
-   export IMS_TOKEN='eyJ...'
-   ./scripts/trigger-shift-left.sh
-   ```
+There is no separate DA CLI for chat; you call **`POST /chat`** like the browser does. Use a **stage** Adobe IMS access token in `IMS_TOKEN` (same tier as localhost DA). The JSON field `imsToken` is what da-agent uses for DA Admin and EDS.
 
 ```bash
 export IMS_TOKEN='eyJ...'   # stage IMS access token (JWT string)
@@ -130,28 +89,10 @@ curl -sN -X POST 'http://127.0.0.1:4002/chat' \
       imsToken: $tok,
       pageContext: { org: "aemsites", site: "da-block-collection", path: "/index.html", view: "browse" },
       messages: [
-        { role: "user", content: "Use the AEM shift-left tool to draft a short hero section for a hiking gear landing page." }
+        { role: "user", content: "Hello — summarize what DA tools I can use on this site." }
       ]
     }')"
 ```
-
-The model decides whether to call `aem_shift_left_content_create`; a more explicit user message improves reliability. If `AEM_SHIFT_LEFT_A2A_URL` is unset, the tool is not registered and the model cannot call it.
-
-3. **Call shift-left A2A only** (bypass Bedrock / da-agent tools) — useful to verify the remote server and token. This matches `sendA2AMessageStream` in `src/aem-shift-left/a2a-sse.ts`:
-
-```bash
-export IMS_TOKEN='eyJ...'
-export A2A_BASE='https://aem-extensibility-aem-shift-left-deploy-ethos101-p-440c2b.cloud.adobe.io/a2a'
-REQ_ID=$(uuidgen | tr '[:upper:]' '[:lower:]')
-MSG_ID=$(uuidgen | tr '[:upper:]' '[:lower:]')
-
-curl -sN -X POST "${A2A_BASE}/" \
-  -H 'Content-Type: application/json' \
-  -H "Authorization: Bearer ${IMS_TOKEN}" \
-  -d "{\"jsonrpc\":\"2.0\",\"method\":\"message/stream\",\"params\":{\"message\":{\"messageId\":\"${MSG_ID}\",\"role\":\"user\",\"parts\":[{\"kind\":\"text\",\"text\":\"Say hello in one sentence.\"}]}},\"id\":\"${REQ_ID}\"}"
-```
-
-Response is **SSE** (`data: { ... }` lines with JSON-RPC `result` objects). Parsing rules are implemented in `parseA2aSseResponse`.
 
 ### Chat API
 
