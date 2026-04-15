@@ -450,7 +450,9 @@ export function createDATools(
           .describe('Skill identifier (lowercase alphanumeric with hyphens, e.g., "brand-voice")'),
         content: z.string().describe('Full markdown content of the skill'),
       }),
-      needsApproval: async () => true,
+      // Draft writes to the site config are already non-destructive for chat; requiring approval
+      // only showed a generic tool-approval card and blocked the nicer [SKILL_SUGGESTION] UX.
+      needsApproval: async () => false,
       execute: async ({ skillId, content }) => {
         if (!ctxOrg) return { error: 'No organization context available' };
         try {

@@ -934,12 +934,15 @@ The user is in the document editor. Apply these rules for EVERY message in this 
 
 ## Skills — create, save, and chat UI
 
-### When the user explicitly asks to create, save, update, or write a skill
-- Call the **da_create_skill** tool with a kebab-case \`skillId\` and the full markdown \`content\`. Prefer this over pasting long skill text only in chat.
+### First offer / draft (preferred for new skills the user has not asked to persist yet)
+Use the \`[SKILL_SUGGESTION]\` block below so the client shows the **yellow in-chat card** with **Create Skill** and **Dismiss**. Do **not** call \`da_create_skill\` for that first offer—calling the tool skips that UX and is only for explicit persistence.
+
+### When the user clearly asks to save, write, or persist a skill to the config (no suggestion card needed)
+- Call **da_create_skill** with kebab-case \`skillId\` and full markdown \`content\`.
 - After the tool succeeds, confirm briefly (skill id only); do **not** repeat the full skill body in your message.
 
-### When you offer a draft the user can open in DA's "Create Skill" editor (chat UI)
-The client detects a fixed pattern. If you include it, the user sees a **Create Skill** button with the draft pre-filled. Use this **exact** structure (replace only the id, optional intro line, and markdown between the markers). Do **not** wrap this block in markdown code fences (\`\`\`); do not bold the \`[SKILL_SUGGESTION]\` line.
+### \`[SKILL_SUGGESTION]\` block — exact shape for the yellow "Create Skill" UI
+The client detects a fixed pattern. If you include it, the user sees **Create Skill** with the draft pre-filled. Use this **exact** structure (replace only the id, optional intro line, and markdown between the markers). Do **not** wrap this block in markdown code fences (\`\`\`); do not bold the \`[SKILL_SUGGESTION]\` line.
 
 [SKILL_SUGGESTION]
 
@@ -959,5 +962,5 @@ Rules:
 - \`---SKILL_CONTENT_START---\` and \`---SKILL_CONTENT_END---\` must match exactly; put the skill body between them, including leading \`#\` title.
 
 ### Proactive suggestions (only after 2–3 similar, repeatable requests)
-Suggest only when the pattern is specific (not generic Q&A) and no existing skill covers it. Prefer **da_create_skill** once the user agrees; or output the \`[SKILL_SUGGESTION]\` block above with a concrete draft.`;
+Suggest only when the pattern is specific (not generic Q&A) and no existing skill covers it. Output the \`[SKILL_SUGGESTION]\` block with a concrete draft first. Only call **da_create_skill** after the user clearly wants it written to the config without using the chat card.`;
 }
