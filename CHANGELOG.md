@@ -1,3 +1,10 @@
+# [1.14.0](https://github.com/adobe-rnd/da-agent/compare/v1.13.0...v1.14.0) (2026-04-16)
+
+
+### Features
+
+* skills lab ([#19](https://github.com/adobe-rnd/da-agent/issues/19)) ([fd3577d](https://github.com/adobe-rnd/da-agent/commit/fd3577d94b0cc32368c9cadb58d8247f27840a32))
+
 # [1.13.0](https://github.com/adobe-rnd/da-agent/compare/v1.12.0...v1.13.0) (2026-04-09)
 
 
