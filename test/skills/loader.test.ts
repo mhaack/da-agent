@@ -5,6 +5,8 @@ import type { DAAdminClient } from '../../src/da-admin/client.js';
 function mockClient(opts: {
   configBySite?: Record<string, Record<string, unknown>>;
   saveError?: Error;
+  listSourcesImpl?: (org: string, site: string, path: string) => Promise<unknown>;
+  getSourceImpl?: (org: string, site: string, path: string) => Promise<{ content: string }>;
 }): DAAdminClient {
   return {
     getSiteConfig: async (_org: string, site: string) => {
@@ -16,6 +18,14 @@ function mockClient(opts: {
       if (opts.saveError) throw opts.saveError;
       return { ok: true };
     },
+    listSources:
+      opts.listSourcesImpl ??
+      (async () => []),
+    getSource:
+      opts.getSourceImpl ??
+      (async () => {
+        throw Object.assign(new Error('not found'), { status: 404 });
+      }),
   } as unknown as DAAdminClient;
 }
 
@@ -42,11 +52,73 @@ describe('loadSkillsIndex', () => {
     const index = await loadSkillsIndex(client, 'org', 'mysite');
     expect(index.source).toBe('site');
     expect(index.skills).toHaveLength(2);
-    expect(index.skills[0]).toEqual({ id: 'brand-voice', title: 'Brand Voice' });
-    expect(index.skills[1]).toEqual({ id: 'seo-checklist', title: 'SEO Checklist' });
+    expect(index.skills.map((s) => s.id).sort()).toEqual(['brand-voice', 'seo-checklist']);
+    expect(index.skills.find((s) => s.id === 'brand-voice')).toEqual({
+      id: 'brand-voice',
+      title: 'Brand Voice',
+    });
   });
 
-  it('omits draft skills from the index', async () => {
+  it('merges /.da/skills/*.md when sheet skills exist', async () => {
+    const client = mockClient({
+      configBySite: {
+        mysite: {
+          skills: {
+            data: [{ key: 'sheet-only', content: '# Sheet\n\nok' }],
+          },
+        },
+      },
+      listSourcesImpl: async () => [
+        { name: 'from-repo', ext: 'md', path: '.da/skills/from-repo.md' },
+      ],
+      getSourceImpl: async (_o, _s, path) => {
+        if (path.endsWith('from-repo.md')) return { content: '# Repo Skill\n\nOnly in file.' };
+        throw Object.assign(new Error('nf'), { status: 404 });
+      },
+    });
+
+    const index = await loadSkillsIndex(client, 'org', 'mysite');
+    expect(index.skills.map((s) => s.id).sort()).toEqual(['from-repo', 'sheet-only']);
+  });
+
+  it('includes md-only skills when sheet has no row for that id', async () => {
+    const client = mockClient({
+      configBySite: {
+        mysite: {
+          skills: { data: [] },
+        },
+      },
+      listSourcesImpl: async () => [{ name: 'orphan', ext: 'md' }],
+      getSourceImpl: async (_o, _s, path) => {
+        if (path.includes('orphan.md')) return { content: '# Orphan\n\nBody' };
+        throw Object.assign(new Error('nf'), { status: 404 });
+      },
+    });
+
+    const index = await loadSkillsIndex(client, 'org', 'mysite');
+    expect(index.skills).toHaveLength(1);
+    expect(index.skills[0]).toEqual({ id: 'orphan', title: 'Orphan' });
+  });
+
+  it('omits draft skills from the index even when a repo file exists', async () => {
+    const client = mockClient({
+      configBySite: {
+        mysite: {
+          skills: {
+            data: [{ key: 'wip', content: '# WIP\n\nnot ready', status: 'draft' }],
+          },
+        },
+      },
+      listSourcesImpl: async () => [{ name: 'wip', ext: 'md' }],
+      getSourceImpl: async () => ({ content: '# Should not appear\n\nx' }),
+    });
+
+    const index = await loadSkillsIndex(client, 'org', 'mysite');
+    expect(index.skills).toHaveLength(0);
+    expect(index.source).toBe('none');
+  });
+
+  it('omits draft skills from the index when draft has only sheet entry', async () => {
     const client = mockClient({
       configBySite: {
         mysite: {
@@ -66,7 +138,7 @@ describe('loadSkillsIndex', () => {
     expect(index.skills[0]?.id).toBe('live');
   });
 
-  it('returns none when sheet missing or empty', async () => {
+  it('returns none when sheet missing or empty and listSources yields nothing', async () => {
     const client = mockClient({ configBySite: { mysite: {} } });
     const index = await loadSkillsIndex(client, 'org', 'mysite');
     expect(index.source).toBe('none');
@@ -78,6 +150,8 @@ describe('loadSkillsIndex', () => {
       getSiteConfig: async () => {
         throw new Error('network');
       },
+      listSources: async () => [],
+      getSource: async () => ({ content: '' }),
     } as unknown as DAAdminClient;
     const index = await loadSkillsIndex(client, 'org', 'mysite');
     expect(index.source).toBe('none');
@@ -90,7 +164,7 @@ describe('loadSkillsIndex', () => {
 // ---------------------------------------------------------------------------
 
 describe('loadSkillContent', () => {
-  it('loads skill markdown by id', async () => {
+  it('loads skill markdown by id from sheet', async () => {
     const client = mockClient({
       configBySite: {
         mysite: {
@@ -105,8 +179,46 @@ describe('loadSkillContent', () => {
     expect(content).toBe('# Brand Voice\n\nBe concise.');
   });
 
-  it('returns null when skill not in sheet', async () => {
-    const client = mockClient({ configBySite: { mysite: { skills: { data: [] } } } });
+  it('loads skill body from /.da/skills/{id}.md when sheet has no row', async () => {
+    const client = mockClient({
+      configBySite: {
+        mysite: {
+          skills: { data: [] },
+        },
+      },
+      getSourceImpl: async (_o, _s, path) => {
+        if (path === '.da/skills/repo-only.md') return { content: '# Repo Only\n\nHello.' };
+        throw Object.assign(new Error('nf'), { status: 404 });
+      },
+    });
+
+    const content = await loadSkillContent(client, 'org', 'mysite', 'repo-only');
+    expect(content).toBe('# Repo Only\n\nHello.');
+  });
+
+  it('prefers repo markdown over sheet when both exist', async () => {
+    const client = mockClient({
+      configBySite: {
+        mysite: {
+          skills: {
+            data: [{ key: 'merged', content: '# From Sheet\n\nOld.' }],
+          },
+        },
+      },
+      getSourceImpl: async (_o, _s, path) => {
+        if (path === '.da/skills/merged.md') return { content: '# From File\n\nNew.' };
+        throw Object.assign(new Error('nf'), { status: 404 });
+      },
+    });
+
+    const content = await loadSkillContent(client, 'org', 'mysite', 'merged');
+    expect(content).toBe('# From File\n\nNew.');
+  });
+
+  it('returns null when skill not in sheet and no md file', async () => {
+    const client = mockClient({
+      configBySite: { mysite: { skills: { data: [] } } },
+    });
     const content = await loadSkillContent(client, 'org', 'mysite', 'nonexistent');
     expect(content).toBeNull();
   });
@@ -120,6 +232,7 @@ describe('loadSkillContent', () => {
           },
         },
       },
+      getSourceImpl: async () => ({ content: '# File\n\nShould not load' }),
     });
     const content = await loadSkillContent(client, 'org', 'mysite', 'wip');
     expect(content).toBeNull();

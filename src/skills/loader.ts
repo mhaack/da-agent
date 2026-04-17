@@ -1,4 +1,5 @@
 import type { DAAdminClient } from '../da-admin/client.js';
+import type { DASourceContent } from '../da-admin/types.js';
 
 export interface SkillSummary {
   id: string;
@@ -7,11 +8,13 @@ export interface SkillSummary {
 
 export interface SkillsIndex {
   skills: SkillSummary[];
-  /** Skills always load from site config KV (`skills` sheet). */
+  /** Skills from site config `skills` sheet and/or `/.da/skills/*.md` (same merge as da-nx). */
   source: 'site' | 'none';
 }
 
 const SKILLS_SHEET = 'skills';
+/** Repo path under the site, matches da-nx `SKILLS_MD_REL`. */
+const SKILLS_MD_PATH = '.da/skills';
 
 type SkillRow = {
   key?: string;
@@ -21,6 +24,8 @@ type SkillRow = {
   body?: string;
   status?: string;
 };
+
+type ListItem = { name: string; path?: string; ext?: string };
 
 function skillRowStatus(row: SkillRow | undefined): 'draft' | 'approved' {
   if (!row) return 'approved';
@@ -50,14 +55,107 @@ function normalizeSkillId(skillId: string): string {
     .replace(/\.md$/i, '');
 }
 
+/** Reject path-like ids (matches da-nx `sanitizeSkillFilename` intent). */
+function sanitizeSkillFilename(skillId: string): string {
+  const t = normalizeSkillId(skillId);
+  if (!t || t.includes('/') || t.includes('..') || t.includes('\\')) return '';
+  return t;
+}
+
 function rowsFromConfig(cfg: Record<string, unknown> | null | undefined): SkillRow[] {
   if (!cfg || typeof cfg !== 'object') return [];
   const sheet = cfg[SKILLS_SHEET] as { data?: SkillRow[] } | undefined;
   return Array.isArray(sheet?.data) ? sheet!.data! : [];
 }
 
+function sourceContentString(sc: DASourceContent | string): string {
+  if (typeof sc === 'string') return sc;
+  return sc?.content ?? '';
+}
+
 /**
- * Load skill index from DA config KV (`skills` sheet: key + content columns).
+ * Map approved, non-empty `skills` sheet rows to id → markdown (draft rows excluded).
+ */
+function skillsKvMapFromRows(rows: SkillRow[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const row of rows) {
+    const id = normalizeSkillId(String(row.key ?? row.id ?? ''));
+    if (id && skillRowStatus(row) !== 'draft') {
+      const raw = String(row.content ?? row.value ?? row.body ?? '').trim();
+      if (raw) {
+        out[id] = raw;
+      }
+    }
+  }
+  return out;
+}
+
+/** Ids that are explicitly marked draft in the sheet (used to block file-only fallbacks for that id). */
+function draftSkillIdsFromRows(rows: SkillRow[]): Set<string> {
+  const s = new Set<string>();
+  for (const row of rows) {
+    if (skillRowStatus(row) === 'draft') {
+      const id = normalizeSkillId(String(row.key ?? row.id ?? ''));
+      if (id) {
+        s.add(id);
+      }
+    }
+  }
+  return s;
+}
+
+/**
+ * Load all `/.da/skills/*.md` files (mirrors da-nx `loadSkillsFromMdFiles` merge source).
+ */
+async function loadSkillsMapFromMdFiles(
+  client: DAAdminClient,
+  org: string,
+  site: string,
+): Promise<Record<string, string>> {
+  try {
+    const resp = await client.listSources(org, site, SKILLS_MD_PATH);
+    const items = (Array.isArray(resp) ? resp : []) as unknown as ListItem[];
+    const mdItems = items.filter((i) => i.ext === 'md' || i.name?.endsWith('.md'));
+    const pairs = await Promise.all(
+      mdItems.map(async (item) => {
+        const id = normalizeSkillId(item.name.replace(/\.md$/i, ''));
+        if (!id || !sanitizeSkillFilename(id)) return null;
+        const subPath = `${SKILLS_MD_PATH}/${item.name}${
+          item.ext && !item.name.endsWith('.md') ? `.${item.ext}` : ''
+        }`;
+        try {
+          const sc = await client.getSource(org, site, subPath);
+          const raw = sourceContentString(sc as DASourceContent).trim();
+          if (!raw) return null;
+          return [id, raw] as const;
+        } catch {
+          return null;
+        }
+      }),
+    );
+    return Object.fromEntries(pairs.filter(Boolean) as [string, string][]);
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Merge KV map with repo `.md` map — **file wins** when both define the same id (same as da-nx).
+ */
+function mergeSkillMaps(
+  kvMap: Record<string, string>,
+  fileMap: Record<string, string>,
+  draftIds: Set<string>,
+): Record<string, string> {
+  const merged = { ...kvMap, ...fileMap };
+  for (const id of draftIds) {
+    delete merged[id];
+  }
+  return merged;
+}
+
+/**
+ * Load skill index from DA config (`skills` sheet) merged with `/.da/skills/*.md`.
  */
 export async function loadSkillsIndex(
   client: DAAdminClient,
@@ -67,15 +165,15 @@ export async function loadSkillsIndex(
   try {
     const cfg = await client.getSiteConfig(org, site);
     const rows = rowsFromConfig(cfg);
-    const skills: SkillSummary[] = rows
-      .map((row) => {
-        const id = normalizeSkillId(String(row.key ?? row.id ?? ''));
-        const raw = String(row.content ?? row.value ?? row.body ?? '');
-        if (!id || !raw.trim()) return null;
-        if (skillRowStatus(row) === 'draft') return null;
-        return { id, title: extractTitle(raw) };
-      })
-      .filter((s): s is SkillSummary => s !== null);
+    const kvMap = skillsKvMapFromRows(rows);
+    const draftIds = draftSkillIdsFromRows(rows);
+    const fileMap = await loadSkillsMapFromMdFiles(client, org, site);
+    const merged = mergeSkillMaps(kvMap, fileMap, draftIds);
+    const skills: SkillSummary[] = Object.entries(merged).map(([id, raw]) => ({
+      id,
+      title: extractTitle(raw),
+    }));
+    skills.sort((a, b) => a.id.localeCompare(b.id));
 
     return { skills, source: skills.length > 0 ? 'site' : 'none' };
   } catch {
@@ -84,7 +182,8 @@ export async function loadSkillsIndex(
 }
 
 /**
- * Load full markdown for one skill from the `skills` config sheet.
+ * Load full markdown for one skill: `skills` sheet and/or `/.da/skills/{id}.md`.
+ * When both exist, **repo file wins** (matches da-nx merge).
  */
 export async function loadSkillContent(
   client: DAAdminClient,
@@ -93,14 +192,31 @@ export async function loadSkillContent(
   skillId: string,
 ): Promise<string | null> {
   const want = normalizeSkillId(skillId);
+  if (!want) return null;
+
   try {
     const cfg = await client.getSiteConfig(org, site);
     const rows = rowsFromConfig(cfg);
     const row = rows.find((r) => normalizeSkillId(String(r.key ?? r.id ?? '')) === want);
-    if (!row) return null;
-    if (skillRowStatus(row) === 'draft') return null;
-    const raw = String(row.content ?? row.value ?? row.body ?? '').trim();
-    return raw || null;
+    if (row && skillRowStatus(row) === 'draft') return null;
+
+    const sheetRaw = row ? String(row.content ?? row.value ?? row.body ?? '').trim() : '';
+
+    let fileRaw: string | null = null;
+    const base = sanitizeSkillFilename(want);
+    if (base) {
+      try {
+        const subPath = `${SKILLS_MD_PATH}/${base}.md`;
+        const sc = await client.getSource(org, site, subPath);
+        const t = sourceContentString(sc as DASourceContent).trim();
+        fileRaw = t || null;
+      } catch {
+        fileRaw = null;
+      }
+    }
+
+    if (fileRaw) return fileRaw;
+    return sheetRaw || null;
   } catch {
     return null;
   }
