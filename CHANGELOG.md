@@ -1,3 +1,10 @@
+## [1.14.1](https://github.com/adobe-rnd/da-agent/compare/v1.14.0...v1.14.1) (2026-04-27)
+
+
+### Bug Fixes
+
+* release ([c1e2e7c](https://github.com/adobe-rnd/da-agent/commit/c1e2e7cd3b42fddbba2df4222c33acfc06886ea7))
+
 # [1.14.0](https://github.com/adobe-rnd/da-agent/compare/v1.13.0...v1.14.0) (2026-04-16)
 
 

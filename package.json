@@ -1,6 +1,6 @@
 {
   "name": "da-agent",
-  "version": "1.14.0",
+  "version": "1.14.1",
   "description": "AI assistant worker for Document Authoring (DA) platform",
   "license": "Apache-2.0",
   "type": "module",
