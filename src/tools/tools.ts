@@ -1,7 +1,7 @@
 /**
  * DA and EDS Tools
  * Vercel AI SDK tool definitions wrapping DAAdminClient and EDSAdminClient.
- * When in edit view with a collab session, read/write the current doc via the shared Y doc.
+ * When in edit or canvas view with a collab session, read/write the current doc via the shared Y doc.
  */
 
 import { tool } from 'ai';
@@ -12,7 +12,7 @@ import type { CollabClient } from '../collab-client';
 import { loadSkillContent, saveSkillContent } from '../skills/loader';
 import { listAgentPresets, saveAgentPreset } from '../agents/loader';
 import type { AgentPreset } from '../agents/loader';
-import { ensureHtmlExtension } from './utils';
+import { ensureHtmlExtension, isCollabEligibleView } from './utils';
 import type { EDSAdminClient } from '../eds-admin/client';
 import type { EDSOperationResult, EDSPublishResult, EDSToolError } from '../eds-admin/types';
 import { saveProjectMemory, updateRecentPages } from '../memory/loader.js';
@@ -57,7 +57,7 @@ function useCollabForDoc(
 ): boolean {
   if (!options?.pageContext || !options?.collab?.isConnected) return false;
   const { org: ctxOrg, site: ctxSite, path: ctxPath, view } = options.pageContext;
-  if (view !== 'edit') return false;
+  if (!isCollabEligibleView(view)) return false;
   return (
     ctxOrg === org && ctxSite === repo && ensureHtmlExtension(ctxPath) === ensureHtmlExtension(path)
   );

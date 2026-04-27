@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { DAAdminClient } from './da-admin/client.js';
 import { EDSAdminClient } from './eds-admin/client.js';
 import { createCanvasClientTools, createDATools, createEDSTools } from './tools/tools.js';
-import { ensureHtmlExtension } from './tools/utils.js';
+import { ensureHtmlExtension, isCollabEligibleView } from './tools/utils.js';
 import { createCollabClient } from './collab-client.js';
 import { initTelemetry, flushTelemetry } from './telemetry.js';
 import type { MCPServerConfig, BuiltInMCPServerConfig } from './mcp/types.js';
@@ -568,7 +568,7 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   const sourceUrl = `${daOrigin}/source/${pageContext?.org}/${pageContext?.site}/${ensureHtmlExtension(pageContext?.path ?? '')}`;
 
   const collab =
-    pageContext?.view === 'edit' && imsToken && env.DACOLLAB
+    isCollabEligibleView(pageContext?.view) && imsToken && env.DACOLLAB
       ? await createCollabClient(sourceUrl, imsToken, pageContext.org, env.DACOLLAB)
       : null;
 
@@ -1069,10 +1069,10 @@ When making DA tool calls, always use these values:
 - repo: "${pageContext.site}"
 - path: "${ensureHtmlExtension(pageContext.path)}"
 ${
-  pageContext.view === 'edit'
+  isCollabEligibleView(pageContext.view)
     ? `
-## Edit View — Content Update Rules
-The user is in the document editor. Apply these rules for EVERY message in this session:
+## Edit / canvas view — Content Update Rules
+The user is in the document editor (classic edit or canvas). Apply these rules for EVERY message in this session:
 
 **Reading before writing**
 - ALWAYS call the get content tool to read the current page content before making any changes
