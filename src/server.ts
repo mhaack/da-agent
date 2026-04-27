@@ -21,7 +21,8 @@ import {
   type GeneratedToolsIndex,
 } from './generated-tools/loader.js';
 import { callSandbox } from './generated-tools/sandbox-client.js';
-import { fetchProjectMemory } from './memory/loader.js';
+import { fetchProjectMemory, saveProjectMemory } from './memory/loader.js';
+import { loadDisabledTools, applyToolOverrides } from './tools/tool-overrides.js';
 import {
   detectSessionUserPattern,
   formatSessionPatternForPrompt,
@@ -531,6 +532,108 @@ function extractImsUserId(token: string | undefined): string | undefined {
   }
 }
 
+function extractLastUserMessageText(messages: unknown[]): string {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const msg = messages[i] as { role?: string; content?: unknown };
+    if (msg?.role === 'user') {
+      if (typeof msg.content === 'string') return msg.content.trim();
+      if (Array.isArray(msg.content)) {
+        const text = msg.content
+          .map((part) => {
+            if (!part || typeof part !== 'object') return '';
+            if ('type' in part && (part as { type?: string }).type !== 'text') return '';
+            return String((part as { text?: unknown }).text ?? '').trim();
+          })
+          .filter(Boolean)
+          .join('\n')
+          .trim();
+        if (text) return text;
+      }
+    }
+  }
+  return '';
+}
+
+function collectAssistantTextFromSteps(steps: Array<{ text?: string }>): string {
+  const chunks = steps.map((s) => String(s?.text ?? '').trim()).filter(Boolean);
+  return chunks.join('\n').trim();
+}
+
+function hasProjectMemoryToolCall(
+  steps: Array<{ toolCalls?: Array<{ toolName?: string }> }>,
+): boolean {
+  return steps.some((step) =>
+    (step.toolCalls ?? []).some((call) => call?.toolName === 'write_project_memory'),
+  );
+}
+
+function shouldPersistMemoryFallback(userText: string, assistantText: string): boolean {
+  const assistantTrimmed = assistantText.trim();
+  if (!assistantTrimmed || assistantTrimmed.startsWith('Error:')) return false;
+
+  const combined = `${userText}\n${assistantText}`.toLowerCase();
+  if (!combined.trim()) return false;
+  const memorySignals = [
+    'site',
+    'structure',
+    'section',
+    'navigation',
+    'template',
+    'url pattern',
+    'information architecture',
+    'url',
+    'brand',
+    'workflow',
+    'agent',
+    'mcp',
+    'skill',
+    'content model',
+    'project memory',
+  ];
+  const signalHits = memorySignals.filter((signal) => combined.includes(signal));
+  if (signalHits.length >= 2) return true;
+  if (signalHits.length === 0) return false;
+  // With one weak signal, require either a clear question or a substantial answer.
+  return userText.includes('?') || assistantTrimmed.length > 220;
+}
+
+function summarizeForMemory(text: string, maxLen = 220): string {
+  const compact = text.replace(/\s+/g, ' ').trim();
+  if (compact.length <= maxLen) return compact;
+  return `${compact.slice(0, maxLen - 1)}…`;
+}
+
+function mergeMemoryWithFallback(
+  existingMemory: string | null,
+  userText: string,
+  assistantText: string,
+): string {
+  const AUTO_MEMORY_HEADER = '## Auto Memory Notes';
+  const MAX_AUTO_MEMORY_LINES = 25;
+  const timestamp = new Date().toISOString();
+  const userSummary = summarizeForMemory(userText || '(no user text)', 140);
+  const assistantSummary = summarizeForMemory(assistantText || '(no assistant text)', 220);
+  const stablePayload = `User context: ${userSummary} | Learned: ${assistantSummary}`;
+  const entry = `- ${timestamp} | ${stablePayload}`;
+  const body = String(existingMemory ?? '').trim();
+  if (!body) return `${AUTO_MEMORY_HEADER}\n${entry}`;
+
+  // Skip duplicate writes for repeated exchanges with equivalent summaries.
+  if (body.includes(stablePayload)) return body;
+
+  const headerIdx = body.indexOf(AUTO_MEMORY_HEADER);
+  if (headerIdx < 0) return `${body}\n\n${AUTO_MEMORY_HEADER}\n${entry}`;
+
+  const prefix = body.slice(0, headerIdx).trimEnd();
+  const section = body.slice(headerIdx + AUTO_MEMORY_HEADER.length).trim();
+  const existingLines = section
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('- '));
+  const nextLines = [entry, ...existingLines].slice(0, MAX_AUTO_MEMORY_LINES);
+  return `${prefix ? `${prefix}\n\n` : ''}${AUTO_MEMORY_HEADER}\n${nextLines.join('\n')}`;
+}
+
 async function handleChat(request: Request, env: Env): Promise<Response> {
   initTelemetry(env);
 
@@ -718,60 +821,80 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
     }
   }
 
-  // Connect to live MCP servers and register their tools
+  // Load MCP tools, generated tool stubs, and site-level tool overrides in parallel
   let mcpTools: Record<string, unknown> = {};
   let mcpClients: MCPClient[] = [];
-  if (mcpConfig && Object.keys(mcpConfig.mcpServers).length > 0) {
-    try {
-      const mcpResult = await connectAndRegisterMCPTools(mcpConfig);
-      mcpTools = mcpResult.tools;
-      mcpClients = mcpResult.clients;
-    } catch {
-      // MCP connection failures don't block chat
-    }
-  }
-
-  // Load approved generated tool defs and register stubs (execution delegates to sandbox).
   let generatedToolsIndex: GeneratedToolsIndex = { tools: [], source: 'none' };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const generatedToolStubs: Record<string, any> = {};
-  if (adminClient && pageContext && env.GENERATED_TOOLS_ENABLED === 'true') {
-    try {
-      generatedToolsIndex = await loadGeneratedToolsIndex(
-        adminClient,
-        pageContext.org,
-        pageContext.site,
-      );
-      const activeDefs = await loadApprovedGeneratedTools(
-        adminClient,
-        pageContext.org,
-        pageContext.site,
-      );
-      const sandboxUrl: string | undefined = env.GENERATED_TOOLS_SANDBOX_URL;
-      activeDefs.forEach((def) => {
-        const toolName = `gen__${def.id}`;
-        generatedToolStubs[toolName] = {
-          description: def.description,
-          parameters: def.inputSchema,
-          // Execution is handled server-side: stub delegates to the sandbox Worker.
-          execute: async (args: Record<string, unknown>) =>
-            callSandbox(sandboxUrl, {
-              toolId: def.id,
-              org: pageContext.org,
-              site: pageContext.site,
-              args,
-              imsToken: imsToken ?? undefined,
-            }),
-        };
-      });
-    } catch {
-      // Generated tools loading is best-effort; never blocks chat
-    }
+  let disabledTools = new Set<string>();
+
+  const parallelLoads: Promise<void>[] = [];
+
+  // Connect to live MCP servers and register their tools
+  if (mcpConfig && Object.keys(mcpConfig.mcpServers).length > 0) {
+    parallelLoads.push(
+      (async () => {
+        try {
+          const mcpResult = await connectAndRegisterMCPTools(mcpConfig);
+          mcpTools = mcpResult.tools;
+          mcpClients = mcpResult.clients;
+        } catch {
+          // MCP connection failures don't block chat
+        }
+      })(),
+    );
   }
 
-  // Process any pending tool approvals before passing messages to streamText.
-  // The AI SDK's needsApproval is designed for stateful sessions; since each request
-  // creates a fresh streamText call, we resolve approvals here instead.
+  // Load approved generated tool defs and register stubs (execution delegates to sandbox)
+  if (adminClient && pageContext && env.GENERATED_TOOLS_ENABLED === 'true') {
+    parallelLoads.push(
+      (async () => {
+        try {
+          generatedToolsIndex = await loadGeneratedToolsIndex(
+            adminClient,
+            pageContext.org,
+            pageContext.site,
+          );
+          const activeDefs = await loadApprovedGeneratedTools(
+            adminClient,
+            pageContext.org,
+            pageContext.site,
+          );
+          const sandboxUrl: string | undefined = env.GENERATED_TOOLS_SANDBOX_URL;
+          activeDefs.forEach((def) => {
+            const toolName = `gen__${def.id}`;
+            generatedToolStubs[toolName] = {
+              description: def.description,
+              parameters: def.inputSchema,
+              execute: async (args: Record<string, unknown>) =>
+                callSandbox(sandboxUrl, {
+                  toolId: def.id,
+                  org: pageContext.org,
+                  site: pageContext.site,
+                  args,
+                  imsToken: imsToken ?? undefined,
+                }),
+            };
+          });
+        } catch {
+          // Generated tools loading is best-effort; never blocks chat
+        }
+      })(),
+    );
+  }
+
+  // Load per-tool enable/disable overrides from the site's tool-overrides config sheet
+  if (adminClient && pageContext) {
+    parallelLoads.push(
+      (async () => {
+        disabledTools = await loadDisabledTools(adminClient, pageContext.org, pageContext.site);
+      })(),
+    );
+  }
+
+  await Promise.all(parallelLoads);
+
   const allTools = {
     ...canvasClientTools,
     ...daTools,
@@ -779,6 +902,14 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
     ...mcpTools,
     ...generatedToolStubs,
   };
+
+  // Remove tools disabled by site admins via the Skills Editor UI
+  if (disabledTools.size > 0) {
+    const removed = applyToolOverrides(allTools, disabledTools);
+    if (removed.length > 0) {
+      console.log('[da-agent] disabled tools via overrides:', removed);
+    }
+  }
 
   const processedMessages = await resolveApprovals(messages, allTools);
   const strippedForModel = stripClientOnlyToolInputs(processedMessages);
@@ -812,7 +943,32 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
       collab?.disconnect();
       cleanupMCP();
     },
-    onFinish: async () => {
+    onFinish: async (event) => {
+      if (adminClient && pageContext) {
+        try {
+          const steps = event?.steps ?? [];
+          const memoryToolWasCalled = hasProjectMemoryToolCall(
+            steps as Array<{ toolCalls?: Array<{ toolName?: string }> }>,
+          );
+
+          // Deterministic fallback: if the model skipped write_project_memory,
+          // persist a compact memory note from this exchange.
+          if (!memoryToolWasCalled) {
+            const assistantText = collectAssistantTextFromSteps(steps as Array<{ text?: string }>);
+            const userText = extractLastUserMessageText(strippedForModel as unknown[]);
+            if (shouldPersistMemoryFallback(userText, assistantText)) {
+              const latestMemory =
+                projectMemory ??
+                (await fetchProjectMemory(adminClient, pageContext.org, pageContext.site));
+              const merged = mergeMemoryWithFallback(latestMemory, userText, assistantText);
+              await saveProjectMemory(adminClient, pageContext.org, pageContext.site, merged);
+              console.log('[da-agent] memory fallback persisted');
+            }
+          }
+        } catch (e) {
+          console.log('[da-agent] memory fallback skipped:', formatErrorForLog(e));
+        }
+      }
       await flushTelemetry();
       collab?.disconnect();
       cleanupMCP();
