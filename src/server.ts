@@ -57,7 +57,7 @@ function formatErrorForLog(err: unknown): string {
 const PageContextSchema = z.object({
   org: z.string(),
   site: z.string(),
-  path: z.string(),
+  path: z.string().optional().default(''),
   view: z.string().optional(),
 });
 
@@ -529,12 +529,12 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   try {
     body = await request.json();
   } catch {
-    return new Response('Invalid JSON', { status: 400 });
+    return new Response('Invalid JSON', { status: 400, headers: CORS_HEADERS });
   }
 
   const parsed = ChatRequestSchema.safeParse(body);
   if (!parsed.success) {
-    return new Response('Invalid request body', { status: 400 });
+    return new Response('Invalid request body', { status: 400, headers: CORS_HEADERS });
   }
 
   const {
