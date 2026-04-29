@@ -3,7 +3,13 @@ import { streamText, stepCountIs, type ModelMessage } from 'ai';
 import { z } from 'zod';
 import { DAAdminClient } from './da-admin/client.js';
 import { EDSAdminClient } from './eds-admin/client.js';
-import { createCanvasClientTools, createDATools, createEDSTools } from './tools/tools.js';
+import {
+  createCanvasClientTools,
+  createDATools,
+  createEDSTools,
+  createCompactTools,
+} from './tools/tools.js';
+import COMPACT_SKILL from './compact-skill.js';
 import { ensureHtmlExtension, isCollabEligibleView } from './tools/utils.js';
 import { createCollabClient } from './collab-client.js';
 import { initTelemetry, flushTelemetry } from './telemetry.js';
@@ -531,6 +537,18 @@ function extractImsUserId(token: string | undefined): string | undefined {
   }
 }
 
+/** Claude Sonnet 4 context-window size in tokens. */
+const MODEL_CONTEXT_WINDOW = 1_000_000;
+/** Auto-compact threshold: compact skill is injected above this fraction. */
+const COMPACT_THRESHOLD = 0.75;
+/** Approximate characters per token for English + code. */
+const CHARS_PER_TOKEN = 3.5;
+
+/** Rough token estimate. Uses ~3.5 chars/token — good enough for the compact heuristic. */
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / CHARS_PER_TOKEN);
+}
+
 async function handleChat(request: Request, env: Env): Promise<Response> {
   initTelemetry(env);
 
@@ -569,7 +587,7 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
 
   const collab =
     isCollabEligibleView(pageContext?.view) && imsToken && env.DACOLLAB
-      ? await createCollabClient(sourceUrl, imsToken, pageContext.org, env.DACOLLAB)
+      ? await createCollabClient(sourceUrl, imsToken, pageContext!.org, env.DACOLLAB)
       : null;
 
   const adminClient =
@@ -795,6 +813,21 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   }));
   const modelMessages = expandLatestUserAttachmentsForModel(withSelectionContext, attachmentMeta);
 
+  // Auto-compact: inject compact skill and a MUST-compact notice when message history
+  // exceeds 75% of the model context window. Tool is only registered at that point.
+  const envThreshold = parseFloat(env.COMPACT_THRESHOLD_OVERRIDE ?? '');
+  const effectiveThreshold =
+    Number.isFinite(envThreshold) && envThreshold > 0 && envThreshold < 1
+      ? envThreshold
+      : COMPACT_THRESHOLD;
+  const shouldAutoCompact =
+    estimateTokens(JSON.stringify(modelMessages)) >
+    Math.floor(MODEL_CONTEXT_WINDOW * effectiveThreshold);
+  if (shouldAutoCompact && !agentSkillContents.compact) {
+    agentSkillContents = { ...agentSkillContents, compact: COMPACT_SKILL };
+    Object.assign(allTools, createCompactTools());
+  }
+
   const cleanupMCP = () => {
     mcpClients.forEach((c) => {
       try {
@@ -828,6 +861,7 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
       sessionPattern,
       env.ENVIRONMENT,
       builtInServers,
+      shouldAutoCompact,
     ),
     messages: modelMessages as ModelMessage[],
     tools: allTools,
@@ -915,12 +949,16 @@ function buildSystemPrompt(
   sessionPattern?: SessionUserPattern | null,
   environment?: string,
   builtInServers?: Record<string, BuiltInMCPServerConfig>,
+  autoCompact?: boolean,
 ): string {
   const mcpSection = buildMCPPromptSection(mcpConfig, builtInServers);
   const skillsSection = buildSkillsPromptSection(skillsIndex);
   const agentSection = buildAgentPromptSection(activeAgent, agentSkillContents);
   const generatedToolsSection = generatedToolsIndex
     ? buildGeneratedToolsPromptSection(generatedToolsIndex)
+    : '';
+  const autoCompactSection = autoCompact
+    ? `\n\n## [AUTO-COMPACT TRIGGERED]\nThe conversation has reached ${Math.round(COMPACT_THRESHOLD * 100)}% of the model context-window capacity (${MODEL_CONTEXT_WINDOW / 1_000}K tokens). You MUST call the \`compact_context\` tool immediately, before responding to anything else, using the instructions in the **Compact Context** skill pre-loaded above.`
     : '';
   const pathForUrl = pageContext
     ? `/${pageContext.path.replace(/^\//, '').replace(/\.html$/, '')}`
@@ -1149,5 +1187,5 @@ Rules:
 ### Proactive suggestions (only after 2–3 similar, repeatable requests)
 Suggest only when the pattern is specific (not generic Q&A) and no existing skill covers it. Output the \`[SKILL_SUGGESTION]\` block with a concrete draft first. Only call **da_create_skill** after the user clearly wants it written to the config without using the chat card.${
     sessionPattern ? formatSessionPatternForPrompt(sessionPattern) : ''
-  }`;
+  }${autoCompactSection}`;
 }

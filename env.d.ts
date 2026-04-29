@@ -58,6 +58,8 @@ declare namespace Cloudflare {
       | Fetcher /* da-collab-stage */
       | Fetcher /* da-collab */
       | Fetcher /* da-collab-local */;
+    /** Development-only override for auto-compact threshold (0–1 exclusive) */
+    COMPACT_THRESHOLD_OVERRIDE?: string;
     /** Feature flag: set to "true" to enable generated tools loading */
     GENERATED_TOOLS_ENABLED?: string;
     /** URL of the da-generated-tools-sandbox Worker (Phase 1+) */
