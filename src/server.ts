@@ -3,7 +3,13 @@ import { streamText, stepCountIs, type ModelMessage } from 'ai';
 import { z } from 'zod';
 import { DAAdminClient } from './da-admin/client.js';
 import { EDSAdminClient } from './eds-admin/client.js';
-import { createCanvasClientTools, createDATools, createEDSTools } from './tools/tools.js';
+import {
+  createCanvasClientTools,
+  createDATools,
+  createEDSTools,
+  createCompactTools,
+} from './tools/tools.js';
+import COMPACT_SKILL from '../skills/compact.md';
 import { ensureHtmlExtension, isCollabEligibleView } from './tools/utils.js';
 import { createCollabClient } from './collab-client.js';
 import { initTelemetry, flushTelemetry } from './telemetry.js';
@@ -21,7 +27,16 @@ import {
   type GeneratedToolsIndex,
 } from './generated-tools/loader.js';
 import { callSandbox } from './generated-tools/sandbox-client.js';
-import { fetchProjectMemory } from './memory/loader.js';
+import { fetchProjectMemory, saveProjectMemory } from './memory/loader.js';
+import {
+  estimateTokens,
+  extractLastUserMessageText,
+  collectAssistantTextFromSteps,
+  hasProjectMemoryToolCall,
+  shouldPersistMemoryFallback,
+  mergeMemoryWithFallback,
+} from './memory/utils.js';
+import { loadDisabledTools, applyToolOverrides } from './tools/tool-overrides.js';
 import {
   detectSessionUserPattern,
   formatSessionPatternForPrompt,
@@ -531,6 +546,11 @@ function extractImsUserId(token: string | undefined): string | undefined {
   }
 }
 
+/** Claude Sonnet 4 context-window size in tokens. */
+const MODEL_CONTEXT_WINDOW = 1_000_000;
+/** Auto-compact threshold: compact skill is injected above this fraction. */
+const COMPACT_THRESHOLD = 0.75;
+
 async function handleChat(request: Request, env: Env): Promise<Response> {
   initTelemetry(env);
 
@@ -569,7 +589,7 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
 
   const collab =
     isCollabEligibleView(pageContext?.view) && imsToken && env.DACOLLAB
-      ? await createCollabClient(sourceUrl, imsToken, pageContext.org, env.DACOLLAB)
+      ? await createCollabClient(sourceUrl, imsToken, pageContext!.org, env.DACOLLAB)
       : null;
 
   const adminClient =
@@ -718,60 +738,80 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
     }
   }
 
-  // Connect to live MCP servers and register their tools
+  // Load MCP tools, generated tool stubs, and site-level tool overrides in parallel
   let mcpTools: Record<string, unknown> = {};
   let mcpClients: MCPClient[] = [];
-  if (mcpConfig && Object.keys(mcpConfig.mcpServers).length > 0) {
-    try {
-      const mcpResult = await connectAndRegisterMCPTools(mcpConfig);
-      mcpTools = mcpResult.tools;
-      mcpClients = mcpResult.clients;
-    } catch {
-      // MCP connection failures don't block chat
-    }
-  }
-
-  // Load approved generated tool defs and register stubs (execution delegates to sandbox).
   let generatedToolsIndex: GeneratedToolsIndex = { tools: [], source: 'none' };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const generatedToolStubs: Record<string, any> = {};
-  if (adminClient && pageContext && env.GENERATED_TOOLS_ENABLED === 'true') {
-    try {
-      generatedToolsIndex = await loadGeneratedToolsIndex(
-        adminClient,
-        pageContext.org,
-        pageContext.site,
-      );
-      const activeDefs = await loadApprovedGeneratedTools(
-        adminClient,
-        pageContext.org,
-        pageContext.site,
-      );
-      const sandboxUrl: string | undefined = env.GENERATED_TOOLS_SANDBOX_URL;
-      activeDefs.forEach((def) => {
-        const toolName = `gen__${def.id}`;
-        generatedToolStubs[toolName] = {
-          description: def.description,
-          parameters: def.inputSchema,
-          // Execution is handled server-side: stub delegates to the sandbox Worker.
-          execute: async (args: Record<string, unknown>) =>
-            callSandbox(sandboxUrl, {
-              toolId: def.id,
-              org: pageContext.org,
-              site: pageContext.site,
-              args,
-              imsToken: imsToken ?? undefined,
-            }),
-        };
-      });
-    } catch {
-      // Generated tools loading is best-effort; never blocks chat
-    }
+  let disabledTools = new Set<string>();
+
+  const parallelLoads: Promise<void>[] = [];
+
+  // Connect to live MCP servers and register their tools
+  if (mcpConfig && Object.keys(mcpConfig.mcpServers).length > 0) {
+    parallelLoads.push(
+      (async () => {
+        try {
+          const mcpResult = await connectAndRegisterMCPTools(mcpConfig);
+          mcpTools = mcpResult.tools;
+          mcpClients = mcpResult.clients;
+        } catch {
+          // MCP connection failures don't block chat
+        }
+      })(),
+    );
   }
 
-  // Process any pending tool approvals before passing messages to streamText.
-  // The AI SDK's needsApproval is designed for stateful sessions; since each request
-  // creates a fresh streamText call, we resolve approvals here instead.
+  // Load approved generated tool defs and register stubs (execution delegates to sandbox)
+  if (adminClient && pageContext && env.GENERATED_TOOLS_ENABLED === 'true') {
+    parallelLoads.push(
+      (async () => {
+        try {
+          generatedToolsIndex = await loadGeneratedToolsIndex(
+            adminClient,
+            pageContext.org,
+            pageContext.site,
+          );
+          const activeDefs = await loadApprovedGeneratedTools(
+            adminClient,
+            pageContext.org,
+            pageContext.site,
+          );
+          const sandboxUrl: string | undefined = env.GENERATED_TOOLS_SANDBOX_URL;
+          activeDefs.forEach((def) => {
+            const toolName = `gen__${def.id}`;
+            generatedToolStubs[toolName] = {
+              description: def.description,
+              parameters: def.inputSchema,
+              execute: async (args: Record<string, unknown>) =>
+                callSandbox(sandboxUrl, {
+                  toolId: def.id,
+                  org: pageContext.org,
+                  site: pageContext.site,
+                  args,
+                  imsToken: imsToken ?? undefined,
+                }),
+            };
+          });
+        } catch {
+          // Generated tools loading is best-effort; never blocks chat
+        }
+      })(),
+    );
+  }
+
+  // Load per-tool enable/disable overrides from the site's tool-overrides config sheet
+  if (adminClient && pageContext) {
+    parallelLoads.push(
+      (async () => {
+        disabledTools = await loadDisabledTools(adminClient, pageContext.org, pageContext.site);
+      })(),
+    );
+  }
+
+  await Promise.all(parallelLoads);
+
   const allTools = {
     ...canvasClientTools,
     ...daTools,
@@ -779,6 +819,14 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
     ...mcpTools,
     ...generatedToolStubs,
   };
+
+  // Remove tools disabled by site admins via the Skills Editor UI
+  if (disabledTools.size > 0) {
+    const removed = applyToolOverrides(allTools, disabledTools);
+    if (removed.length > 0) {
+      console.log('[da-agent] disabled tools via overrides:', removed);
+    }
+  }
 
   const processedMessages = await resolveApprovals(messages, allTools);
   const strippedForModel = stripClientOnlyToolInputs(processedMessages);
@@ -794,6 +842,21 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
     ...(typeof a.sizeBytes === 'number' ? { sizeBytes: a.sizeBytes } : {}),
   }));
   const modelMessages = expandLatestUserAttachmentsForModel(withSelectionContext, attachmentMeta);
+
+  // Auto-compact: check against the actual Bedrock payload (modelMessages) and the env-configured
+  // threshold. Inject the compact skill and a MUST-compact notice into the system prompt.
+  const envThreshold = parseFloat(env.COMPACT_THRESHOLD_OVERRIDE ?? '');
+  const effectiveThreshold =
+    Number.isFinite(envThreshold) && envThreshold > 0 && envThreshold < 1
+      ? envThreshold
+      : COMPACT_THRESHOLD;
+  const shouldAutoCompact =
+    estimateTokens(JSON.stringify(modelMessages)) >
+    Math.floor(MODEL_CONTEXT_WINDOW * effectiveThreshold);
+  if (shouldAutoCompact && !agentSkillContents.compact) {
+    agentSkillContents = { ...agentSkillContents, compact: COMPACT_SKILL };
+    Object.assign(allTools, createCompactTools());
+  }
 
   const cleanupMCP = () => {
     mcpClients.forEach((c) => {
@@ -812,7 +875,32 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
       collab?.disconnect();
       cleanupMCP();
     },
-    onFinish: async () => {
+    onFinish: async (event) => {
+      if (adminClient && pageContext) {
+        try {
+          const steps = event?.steps ?? [];
+          const wasMemoryToolCalled = hasProjectMemoryToolCall(
+            steps as Array<{ toolCalls?: Array<{ toolName?: string }> }>,
+          );
+
+          // Deterministic fallback: if the model skipped write_project_memory,
+          // persist a compact memory note from this exchange.
+          if (!wasMemoryToolCalled) {
+            const assistantText = collectAssistantTextFromSteps(steps as Array<{ text?: string }>);
+            const userText = extractLastUserMessageText(strippedForModel as ModelMessage[]);
+            if (shouldPersistMemoryFallback(userText, assistantText)) {
+              const latestMemory =
+                projectMemory ??
+                (await fetchProjectMemory(adminClient, pageContext.org, pageContext.site));
+              const merged = mergeMemoryWithFallback(latestMemory, userText, assistantText);
+              await saveProjectMemory(adminClient, pageContext.org, pageContext.site, merged);
+              console.log('[da-agent] memory fallback persisted');
+            }
+          }
+        } catch (e) {
+          console.log('[da-agent] memory fallback skipped:', formatErrorForLog(e));
+        }
+      }
       await flushTelemetry();
       collab?.disconnect();
       cleanupMCP();
@@ -828,6 +916,7 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
       sessionPattern,
       env.ENVIRONMENT,
       builtInServers,
+      shouldAutoCompact,
     ),
     messages: modelMessages as ModelMessage[],
     tools: allTools,
@@ -915,12 +1004,16 @@ function buildSystemPrompt(
   sessionPattern?: SessionUserPattern | null,
   environment?: string,
   builtInServers?: Record<string, BuiltInMCPServerConfig>,
+  autoCompact?: boolean,
 ): string {
   const mcpSection = buildMCPPromptSection(mcpConfig, builtInServers);
   const skillsSection = buildSkillsPromptSection(skillsIndex);
   const agentSection = buildAgentPromptSection(activeAgent, agentSkillContents);
   const generatedToolsSection = generatedToolsIndex
     ? buildGeneratedToolsPromptSection(generatedToolsIndex)
+    : '';
+  const autoCompactSection = autoCompact
+    ? `\n\n## [AUTO-COMPACT TRIGGERED]\nThe conversation has reached ${Math.round(COMPACT_THRESHOLD * 100)}% of the model context-window capacity (${MODEL_CONTEXT_WINDOW / 1_000}K tokens). You MUST call the \`compact_context\` tool immediately, before responding to anything else, using the instructions in the **Compact Context** skill pre-loaded above.`
     : '';
   const pathForUrl = pageContext
     ? `/${pageContext.path.replace(/^\//, '').replace(/\.html$/, '')}`
@@ -1149,5 +1242,5 @@ Rules:
 ### Proactive suggestions (only after 2–3 similar, repeatable requests)
 Suggest only when the pattern is specific (not generic Q&A) and no existing skill covers it. Output the \`[SKILL_SUGGESTION]\` block with a concrete draft first. Only call **da_create_skill** after the user clearly wants it written to the config without using the chat card.${
     sessionPattern ? formatSessionPatternForPrompt(sessionPattern) : ''
-  }`;
+  }${autoCompactSection}`;
 }

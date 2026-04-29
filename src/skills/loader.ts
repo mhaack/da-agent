@@ -1,4 +1,5 @@
 import type { DAAdminClient } from '../da-admin/client.js';
+import type { DASource, DASourceContent } from '../da-admin/types.js';
 
 export interface SkillSummary {
   id: string;
@@ -7,11 +8,11 @@ export interface SkillSummary {
 
 export interface SkillsIndex {
   skills: SkillSummary[];
-  /** Skills always load from site config KV (`skills` sheet). */
   source: 'site' | 'none';
 }
 
 const SKILLS_SHEET = 'skills';
+const SKILLS_DIR = '.da/skills';
 
 type SkillRow = {
   key?: string;
@@ -57,7 +58,48 @@ function rowsFromConfig(cfg: Record<string, unknown> | null | undefined): SkillR
 }
 
 /**
- * Load skill index from DA config KV (`skills` sheet: key + content columns).
+ * List .md files in .da/skills/ and read their contents.
+ * Returns a map of { skillId → markdown }.
+ */
+async function loadSkillFiles(
+  client: DAAdminClient,
+  org: string,
+  site: string,
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  try {
+    console.log(`[skills] listing ${SKILLS_DIR} for ${org}/${site}`);
+    const items: DASource[] = await client.listSources(org, site, SKILLS_DIR);
+    const mdItems = (Array.isArray(items) ? items : []).filter((item) => {
+      const ext = String(item.ext ?? '').toLowerCase();
+      const name = String(item.name ?? '');
+      return ext === 'md' || name.toLowerCase().endsWith('.md');
+    });
+    console.log(`[skills] found ${mdItems.length} .md file(s) in ${SKILLS_DIR}`);
+    await Promise.all(
+      mdItems.map(async (item) => {
+        const filename = item.path?.split('/').pop() ?? item.name;
+        const id = normalizeSkillId(filename);
+        if (!id) return;
+        try {
+          const src = await client.getSource(org, site, `${SKILLS_DIR}/${filename}`);
+          const text = typeof src === 'string' ? src : ((src as DASourceContent).content ?? '');
+          if (text) out.set(id, text);
+        } catch (e) {
+          console.warn(`[skills] could not read ${SKILLS_DIR}/${filename}:`, e);
+        }
+      }),
+    );
+  } catch (e) {
+    console.log(`[skills] loadSkillFiles error for ${org}/${site}:`, e);
+  }
+  return out;
+}
+
+/**
+ * Load skill index by merging config `skills` sheet with .da/skills/*.md files.
+ * Config rows take precedence for status; .md file body is used when present.
+ * Skills that exist only as .md files (no config row) are treated as approved.
  */
 export async function loadSkillsIndex(
   client: DAAdminClient,
@@ -65,17 +107,32 @@ export async function loadSkillsIndex(
   site: string,
 ): Promise<SkillsIndex> {
   try {
-    const cfg = await client.getSiteConfig(org, site);
+    const [cfg, fileMap] = await Promise.all([
+      client.getSiteConfig(org, site).catch(() => null),
+      loadSkillFiles(client, org, site),
+    ]);
+
     const rows = rowsFromConfig(cfg);
-    const skills: SkillSummary[] = rows
-      .map((row) => {
-        const id = normalizeSkillId(String(row.key ?? row.id ?? ''));
-        const raw = String(row.content ?? row.value ?? row.body ?? '');
-        if (!id || !raw.trim()) return null;
-        if (skillRowStatus(row) === 'draft') return null;
-        return { id, title: extractTitle(raw) };
-      })
-      .filter((s): s is SkillSummary => s !== null);
+    const seen = new Set<string>();
+    const skills: SkillSummary[] = [];
+
+    // Config rows first (they carry status)
+    for (const row of rows) {
+      const id = normalizeSkillId(String(row.key ?? row.id ?? ''));
+      const body = fileMap.get(id) ?? String(row.content ?? row.value ?? row.body ?? '');
+      const isDraft = skillRowStatus(row) === 'draft';
+      if (id && body.trim() && !isDraft) {
+        seen.add(id);
+        skills.push({ id, title: extractTitle(body) });
+      }
+    }
+
+    // .md-only files (no config row) — treat as approved
+    for (const [id, body] of fileMap) {
+      if (!seen.has(id)) {
+        skills.push({ id, title: extractTitle(body) });
+      }
+    }
 
     return { skills, source: skills.length > 0 ? 'site' : 'none' };
   } catch {
@@ -84,7 +141,8 @@ export async function loadSkillsIndex(
 }
 
 /**
- * Load full markdown for one skill from the `skills` config sheet.
+ * Load full markdown for one skill.
+ * Checks .da/skills/{id}.md first, falls back to config sheet.
  */
 export async function loadSkillContent(
   client: DAAdminClient,
@@ -93,6 +151,17 @@ export async function loadSkillContent(
   skillId: string,
 ): Promise<string | null> {
   const want = normalizeSkillId(skillId);
+
+  // Try .md file first — it's the canonical body when both exist
+  try {
+    const src = await client.getSource(org, site, `${SKILLS_DIR}/${want}.md`);
+    const text = typeof src === 'string' ? src : ((src as DASourceContent).content ?? '');
+    if (text.trim()) return text.trim();
+  } catch {
+    /* file may not exist — fall through to config */
+  }
+
+  // Fall back to config sheet
   try {
     const cfg = await client.getSiteConfig(org, site);
     const rows = rowsFromConfig(cfg);

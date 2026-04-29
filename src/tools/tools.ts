@@ -572,6 +572,32 @@ export function createDATools(
 }
 
 /**
+ * Tools for compacting the conversation context window.
+ * Always registered — no DA client dependency.
+ */
+export function createCompactTools() {
+  return {
+    compact_context: tool({
+      description:
+        'Produce and emit a compact summary of the entire conversation history to free context-window space. ' +
+        'Call this whenever the compact skill is active (auto-triggered or user-requested). ' +
+        'The summary must capture: active task, site context, work completed, pending items, and key facts. ' +
+        'After this tool returns, briefly tell the user the conversation was compacted, then continue helping.',
+      inputSchema: z.object({
+        summary: z
+          .string()
+          .min(1)
+          .describe(
+            'Full markdown summary using the five required sections from the compact skill: ' +
+              'Active task, Site context, Work completed, Pending items, Key facts & preferences.',
+          ),
+      }),
+      execute: async ({ summary }) => ({ compacted: true, summary }),
+    }),
+  };
+}
+
+/**
  * Runs only in the canvas browser; no `execute` so the AI SDK defers results to the client.
  */
 export const CANVAS_CLIENT_ONLY_TOOLS = [
