@@ -11,7 +11,7 @@ keep_vars = true
 enabled = true
 
 [dev]
-port = 4002
+port = 4200
 
 # ----------------------------------------------------------------------
 # CI environment

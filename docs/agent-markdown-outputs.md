@@ -16,7 +16,7 @@ The page has been updated with the new hero section.
 **Source:** `src/server.ts:869-886` — Edit view rules explicitly instruct:
 > "After updating, give a brief confirmation in plain prose."
 
-**When triggered:** Any `content_update`, `content_create`, `content_delete`, `content_move`, or `content_copy` operation completes.
+**When triggered:** Any `content_replace_doc`, `content_create`, `content_delete`, `content_move`, or `content_copy` operation completes.
 
 ---
 

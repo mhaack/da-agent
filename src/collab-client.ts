@@ -15,6 +15,30 @@ import { aem2doc, doc2aem } from '@da-tools/da-parser';
 type ActivityState = 'connected' | 'thinking' | 'previewing' | 'done';
 
 /**
+ * One addressable top-level block of the document, as surfaced to the agent on read.
+ * - `index`   : 0-based position in the prosemirror XmlFragment (for human/debug reference only).
+ * - `locator` : opaque, base64-encoded Yjs relative position. The agent copies this back verbatim
+ *               to target the block in `replaceRange`; it stays valid under concurrent edits.
+ * - `html`    : the block's EDS/AEM HTML (block markup only, no <body>/<main>/section <div>).
+ */
+export type DocBlock = { index: number; locator: string; html: string };
+
+/** Encode bytes to base64 using Web APIs (works in the Workers runtime). */
+function encodeBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+/** Decode a base64 string back to bytes. */
+function decodeBase64(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+/**
  * Creates a WebSocket class that establishes connections via a Cloudflare service binding.
  * Required because WebsocketProvider needs a WebSocket constructor, not an instance.
  */
@@ -274,6 +298,121 @@ export class CollabClient {
       });
       aem2doc(html, this.ydoc!);
     });
+  }
+
+  /**
+   * Serialize one top-level node to its EDS/AEM HTML (block markup only).
+   * Clones the node into a throwaway Y.Doc and reuses doc2aem, then strips the
+   * <body>/<main> shell and the section wrapper <div> so the agent sees clean block HTML.
+   */
+  private static serializeNode(node: Y.XmlElement | Y.XmlText): string {
+    const tmp = new Y.Doc();
+    tmp.getXmlFragment('prosemirror').insert(0, [node.clone()]);
+    const full = doc2aem(tmp);
+    const match = full.match(/<main>([\s\S]*)<\/main>/);
+    let inner = (match ? match[1] : '').trim();
+    if (inner.startsWith('<div>') && inner.endsWith('</div>')) {
+      inner = inner.slice('<div>'.length, -'</div>'.length).trim();
+    }
+    return inner;
+  }
+
+  /**
+   * Parse an EDS HTML fragment (block markup only) into detached top-level Y nodes.
+   * Wraps the fragment in a single section <div> and reuses aem2doc on a throwaway Y.Doc.
+   * Throws if the HTML cannot be parsed.
+   */
+  private static parseFragment(html: string): Y.XmlElement[] {
+    const tmp = new Y.Doc();
+    aem2doc(`<body><main><div>${html}</div></main></body>`, tmp);
+    return tmp.getXmlFragment('prosemirror').toArray() as Y.XmlElement[];
+  }
+
+  /**
+   * Return the document as a list of addressable top-level blocks.
+   * Section separators (horizontal_rule) and empty structural paragraphs are filtered out;
+   * each remaining block carries a stable relative-position `locator` for `replaceRange`.
+   */
+  readBlocks(): DocBlock[] | null {
+    if (!this.ydoc) return null;
+    const frag = this.ydoc.getXmlFragment('prosemirror');
+    const blocks: DocBlock[] = [];
+    frag.toArray().forEach((node, index) => {
+      if (node instanceof Y.XmlElement && node.nodeName === 'horizontal_rule') return;
+      const html = CollabClient.serializeNode(node as Y.XmlElement | Y.XmlText);
+      if (!html) return; // skip empty/structural paragraphs
+      const rel = Y.createRelativePositionFromTypeIndex(frag, index);
+      const locator = encodeBase64(Y.encodeRelativePosition(rel));
+      blocks.push({ index, locator, html });
+    });
+    return blocks;
+  }
+
+  /**
+   * Replace the contiguous range of top-level nodes [startLocator..endLocator] (inclusive) with
+   * the nodes parsed from `html`. `endLocator` omitted/null ⇒ replace just the start block.
+   *
+   * Fails safe: validates `html` parses to real EDS nodes BEFORE mutating, and errors (rather than
+   * corrupting) if a locator no longer resolves. Leaves daMetadata untouched.
+   */
+  replaceRange(
+    startLocator: string,
+    endLocator: string | null,
+    html: string,
+  ): { ok: true } | { error: string } {
+    if (!this.ydoc) return { error: 'No active document' };
+
+    // Reject empty/whitespace-only content: the HTML parser would coerce it into an empty
+    // node and silently delete the target block. Use content_delete to remove a block.
+    if (!html || !html.trim()) {
+      return { error: 'Replacement content is empty; use content_delete to remove a block' };
+    }
+
+    // Verify the replacement parses to real EDS nodes before touching the live doc.
+    let parsed: Y.XmlElement[];
+    try {
+      parsed = CollabClient.parseFragment(html);
+    } catch (e) {
+      return { error: `Replacement content is not valid EDS HTML: ${String(e)}` };
+    }
+    if (parsed.length === 0) {
+      return { error: 'Replacement content produced no nodes' };
+    }
+
+    const frag = this.ydoc.getXmlFragment('prosemirror');
+
+    const startAbs = Y.createAbsolutePositionFromRelativePosition(
+      Y.decodeRelativePosition(decodeBase64(startLocator)),
+      this.ydoc,
+    );
+    if (!startAbs) {
+      return { error: 'Start locator no longer resolves; re-read the document and retry' };
+    }
+    const start = startAbs.index;
+
+    let end = start; // inclusive index of the last node to replace
+    if (endLocator) {
+      const endAbs = Y.createAbsolutePositionFromRelativePosition(
+        Y.decodeRelativePosition(decodeBase64(endLocator)),
+        this.ydoc,
+      );
+      if (!endAbs) {
+        return { error: 'End locator no longer resolves; re-read the document and retry' };
+      }
+      end = endAbs.index;
+    }
+
+    if (start < 0 || end < start || end >= frag.length) {
+      return { error: 'Invalid locator range' };
+    }
+
+    const count = end - start + 1;
+    const clones = parsed.map((n) => n.clone());
+    this.ydoc.transact(() => {
+      frag.delete(start, count);
+      frag.insert(start, clones);
+    });
+    return { ok: true };
   }
 
   /**

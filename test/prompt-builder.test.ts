@@ -105,14 +105,14 @@ describe('buildSystemPrompt with pageContext', () => {
 
   it('includes edit view rules for edit view', () => {
     const prompt = buildSystemPrompt(pageContext);
-    expect(prompt).toContain('Content Update Rules');
-    expect(prompt).toContain('ALWAYS call the get content tool');
+    expect(prompt).toContain('Document replace rules');
+    expect(prompt).toContain('ALWAYS call content_read');
   });
 
   it('omits edit view rules for non-edit view', () => {
     const browseCtx = { ...pageContext, view: 'browse' };
     const prompt = buildSystemPrompt(browseCtx);
-    expect(prompt).not.toContain('Content Update Rules');
+    expect(prompt).not.toContain('Document replace rules');
   });
 
   it('includes memory instructions', () => {

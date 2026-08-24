@@ -53,7 +53,7 @@
     "semantic-release": "^24.2.7",
     "typescript": "^5.9.3",
     "vitest": "^2.1.8",
-    "wrangler": "^4.68.1"
+    "wrangler": "^4.95.0"
   },
   "lint-staged": {
     "*.{js,ts}": [

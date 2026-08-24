@@ -122,6 +122,9 @@ export function createDATools(
               return {
                 path: ensureHtmlExtension(path),
                 content,
+                // Per-block locators for incremental edits via content_replace.
+                // Each block's `locator` targets that block; pass it back to content_replace.
+                blocks: opts.collab.readBlocks() ?? undefined,
                 source: 'collab',
               };
             }
@@ -176,9 +179,9 @@ export function createDATools(
       },
     });
 
-    tools.content_update = tool({
+    tools.content_replace_doc = tool({
       description:
-        'Update an existing source file in a DA repository with new content. ' +
+        'Replace an existing source file in a DA repository with new content (full document). ' +
         'Content MUST be a plain HTML string (no CDATA, no markdown fences) starting with <body> and ending with </body>, ' +
         'with all page content wrapped in <main> inside <body>. ' +
         'Separate sections with <hr>, represent EDS blocks as <div class="block-name"> elements where each ' +
@@ -216,6 +219,88 @@ export function createDATools(
           const result = await client.updateSource(org, repo, pathWithExt, content, contentType);
           recordPageChange(client, org, repo, pathWithExt, humanReadableSummary);
           return result;
+        } catch (e) {
+          if (isAPIError(e)) return { error: e.message, status: e.status };
+          return { error: String(e) };
+        }
+      },
+    });
+
+    tools.content_replace = tool({
+      description:
+        'Incrementally replace a contiguous range of top-level blocks in the CURRENT live document, ' +
+        'instead of rewriting the whole page. Much faster than content_replace_doc for targeted edits ' +
+        '(a paragraph, heading, list, or single block). ' +
+        'Workflow: call content_read first — its `blocks` array gives each top-level block an opaque ' +
+        '`locator`. Set startLocator to the first block to replace and (optionally) endLocator to the ' +
+        'last block in the range; omit endLocator to replace just the one block. ' +
+        'The `content` is an EDS HTML FRAGMENT — the replacement block markup ONLY (e.g. "<p>…</p>" or ' +
+        '"<div class=\\"hero\\">…</div>"). Do NOT include <body>, <main>, <header>, <footer>, or <hr> ' +
+        'section separators, and do not wrap it in a section <div>. Represent EDS blocks as ' +
+        '<div class="block-name"> with each row a child <div> and each column a nested <div>; use proper ' +
+        'semantic HTML; never use inline styles or <table> tags for blocks. ' +
+        'This tool only works on the current live (collab) page — for other pages or whole-page rewrites ' +
+        'use content_replace_doc. Errors (without changing anything) if a locator is stale or the fragment ' +
+        'is invalid; if so, re-read the document and retry. ' +
+        'Always set humanReadableSummary to a short, clear explanation of what you changed.',
+      inputSchema: z.object({
+        org: z.string().describe('Organization name'),
+        repo: z.string().describe('Repository name'),
+        path: z.string().describe('Path to the file to update'),
+        startLocator: z
+          .string()
+          .describe('The `locator` (from content_read blocks) of the first block to replace'),
+        endLocator: z
+          .string()
+          .optional()
+          .describe(
+            'The `locator` of the last block to replace (inclusive). Omit to replace only the start block.',
+          ),
+        content: z
+          .string()
+          .describe(
+            'Replacement EDS HTML fragment (block markup only, no <body>/<main>/<hr>/section <div>).',
+          ),
+        humanReadableSummary: z
+          .string()
+          .describe(
+            'Brief plain-language summary of edits for the user (no HTML; describe what changed).',
+          ),
+      }),
+      needsApproval: async () => true,
+      execute: async ({
+        org,
+        repo,
+        path,
+        startLocator,
+        endLocator,
+        content,
+        humanReadableSummary,
+      }) => {
+        const pathWithExt = ensureHtmlExtension(path);
+        try {
+          if (!(useCollabForDoc(org, repo, path, opts) && opts?.collab)) {
+            return {
+              error:
+                'content_replace requires a live collab session for the current page. ' +
+                'Use content_replace_doc for other pages or whole-document rewrites.',
+            };
+          }
+          const result = opts.collab.replaceRange(startLocator, endLocator ?? null, content);
+          if ('error' in result) {
+            return { error: result.error };
+          }
+          // Persist the full serialized document back to da-admin (keeps the AEM-HTML contract).
+          const fullContent = opts.collab.getContent();
+          if (fullContent != null) {
+            await client.updateSource(org, repo, pathWithExt, fullContent, undefined, {
+              initiator: 'collab',
+            });
+          }
+          // Note: intentionally NOT disconnecting — keep the session live so subsequent
+          // incremental edits reuse it and previously read locators stay valid.
+          recordPageChange(client, org, repo, pathWithExt, humanReadableSummary);
+          return { path: pathWithExt, source: 'collab', updated: true };
         } catch (e) {
           if (isAPIError(e)) return { error: e.message, status: e.status };
           return { error: String(e) };
