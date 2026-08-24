@@ -144,7 +144,11 @@ export async function loadSkillsIndexFromFolders(
         const indexed = parseSkillIndexEntry(raw);
         if (indexed.status === 'draft') return null;
         const description = indexed.description || indexed.name || entry.name;
-        return { id: entry.name, title: description } satisfies SkillSummary;
+        // .da/skills is user-writable site content — prose only. script.js
+        // siblings are intentionally ignored here. Script-carrying skills come
+        // exclusively from the curated GH marketplace (see src/marketplace/).
+        const summary: SkillSummary = { id: entry.name, title: description };
+        return summary;
       } catch (err) {
         warn('getSource failed for skill.md', { id: entry.name, path, err });
         return null;
@@ -208,7 +212,12 @@ export async function loadSkillBodyFromFolder(
     const status = (err as { status?: number }).status ?? 0;
     if (status !== 404) {
       warn('getSource failed for skill body', { id, path, err });
+      // Non-404 error (e.g. 5xx / network failure): the file may exist but is
+      // temporarily unavailable.  Do NOT fall through to the legacy sheet —
+      // that would silently serve stale content when da-admin is degraded.
+      return null;
     }
+    // 404 → file genuinely absent; fall through to sheet fallback below.
   }
 
   // Built-in code skills: available to presets (including custom presets that

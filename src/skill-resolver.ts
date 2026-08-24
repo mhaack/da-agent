@@ -6,6 +6,7 @@
 
 import { loadSkillsIndexFromFolders, loadSkillBodyFromFolder } from './skills/folder-loader.js';
 import type { SkillsIndex } from './skills/loader.js';
+import { mergeMarketplaceSkillsIntoIndex } from './marketplace/gh-skills.js';
 import { loadAgentPreset } from './agents/loader.js';
 import { getBuiltinPreset } from './agents/builtin-presets.js';
 import type { AgentPreset } from './agents/loader.js';
@@ -32,11 +33,15 @@ export async function resolveSkillsAndAgent(
   let skillsIndex: SkillsIndex | null = null;
   if (adminClient && pageContext) {
     try {
-      skillsIndex = await loadSkillsIndexFromFolders(
+      const folderIndex = await loadSkillsIndexFromFolders(
         adminClient,
         pageContext.org,
         pageContext.site,
       );
+      // Append marketplace script-skills. Folder skills are prose-only (no
+      // execution metadata). If the marketplace is unreachable the index is
+      // returned unchanged.
+      skillsIndex = await mergeMarketplaceSkillsIntoIndex(folderIndex);
     } catch (err) {
       console.warn('[da-agent] failed to load skills index:', err);
     }

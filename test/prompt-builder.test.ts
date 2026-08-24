@@ -186,6 +186,22 @@ describe('buildSystemPrompt with skills', () => {
     const prompt = buildSystemPrompt(undefined, null, { skills: [] });
     expect(prompt).not.toContain('Available Skills');
   });
+
+  it('includes attachmentRef guidance in the script-runnable skills section', () => {
+    const skillsIndex = {
+      skills: [
+        {
+          id: 'import-csv',
+          title: 'Import CSV',
+          execution: { type: 'script' as const, scriptUrl: 'https://example.com/script.js' },
+        },
+      ],
+    };
+    const prompt = buildSystemPrompt(undefined, null, skillsIndex);
+    expect(prompt).toContain('Script-Runnable Skills');
+    expect(prompt).toContain('attachmentRef');
+    expect(prompt).toContain('file bytes or base64');
+  });
 });
 
 describe('buildSystemPrompt with agent', () => {

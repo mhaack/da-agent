@@ -13,6 +13,10 @@ vi.mock('../src/skills/folder-loader.js', () => ({
   LEGACY_SKILLS_SHEET_FALLBACK_ENABLED: true,
 }));
 
+vi.mock('../src/marketplace/gh-skills.js', () => ({
+  mergeMarketplaceSkillsIntoIndex: vi.fn(async (index: unknown) => index),
+}));
+
 vi.mock('../src/agents/loader.js', () => ({
   loadAgentPreset: vi.fn(async (_c: unknown, _o: string, _s: string, agentId: string) =>
     agentId === 'brand'
