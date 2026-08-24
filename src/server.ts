@@ -18,6 +18,9 @@ import {
   normalizeMcpHeadersInput,
 } from './request-schemas.js';
 import { CORS_HEADERS, DA_OAUTH_CLIENT_ID, extractImsUserId } from './auth.js';
+import { handleMCPRequest } from './mcp-server/handler.js';
+import { createDAMCPRegistry } from './mcp-server/da-registry.js';
+import { createEDSMCPRegistry } from './mcp-server/eds-registry.js';
 import { parseTrustedDomains, isUrlTrustedForToken } from './mcp/token-allowlist.js';
 import { resolveMcpFetcher } from './mcp/service-bindings.js';
 import {
@@ -85,6 +88,36 @@ export default {
 
     if (url.pathname === '/mcp-tools' && request.method === 'POST') {
       return handleMcpToolsList(request, env);
+    }
+
+    // CMA plugin surface: DA content tools (da-tools bundle).
+    if (url.pathname === '/mcp/da' && request.method === 'POST') {
+      const token = (request.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '');
+      if (!token) {
+        return new Response('Unauthorized', { status: 401, headers: CORS_HEADERS });
+      }
+      if (!env.DAADMIN) {
+        return new Response(JSON.stringify({ error: 'DA Admin service binding not configured' }), {
+          status: 503,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        });
+      }
+      return handleMCPRequest(
+        request,
+        createDAMCPRegistry(token, env.DAADMIN, {
+          dacollab: env.DACOLLAB,
+          daOrigin: env.DA_ORIGIN,
+        }),
+      );
+    }
+
+    // CMA plugin surface: EDS preview/publish tools (eds-preview bundle).
+    if (url.pathname === '/mcp/eds' && request.method === 'POST') {
+      const token = (request.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '');
+      if (!token) {
+        return new Response('Unauthorized', { status: 401, headers: CORS_HEADERS });
+      }
+      return handleMCPRequest(request, createEDSMCPRegistry(token));
     }
 
     return new Response('Not found', { status: 404 });
